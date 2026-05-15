@@ -1,0 +1,4 @@
+rdflib==7.6.0
+owlready2==0.50
+folium==0.20.0
+pyproj==3.7.2
