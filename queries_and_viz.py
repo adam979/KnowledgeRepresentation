@@ -2,28 +2,38 @@ import re
 from pathlib import Path
 
 import folium
-from folium.plugins import MarkerCluster
 from pyproj import Transformer
-import rdflib
 from rdflib import Graph, Namespace
-from rdflib.namespace import RDF, RDFS, XSD
+from rdflib.namespace import XSD
 
-UHI   = Namespace("http://example.org/uhi#")
+UHI   = Namespace("https://w3id.org/stuttgart-uhi#")
 BOT   = Namespace("https://w3id.org/bot#")
 SOSA  = Namespace("http://www.w3.org/ns/sosa/")
 GEO   = Namespace("http://www.opengis.net/ont/geosparql#")
-ALKIS = Namespace("http://example.org/alkis#")
-EX    = Namespace("http://example.org/data#")
+ALKIS = Namespace("https://w3id.org/stuttgart-uhi/alkis/")
+EX    = Namespace("https://w3id.org/stuttgart-uhi/data/")
 
-TTL_FILE = Path(r"D:\Downloads\AI Lab Project\stuttgart_buildings.ttl")
-MAP_FILE = Path(r"D:\Downloads\AI Lab Project\stuttgart_heat_risk_map.html")
+BASE_DIR = Path(__file__).resolve().parent
+TTL_FILE = BASE_DIR / "stuttgart_buildings.ttl"
+MAP_FILE = BASE_DIR / "stuttgart_heat_risk_map.html"
 
-# UTM32 (EPSG:25832) → WGS84
 TO_WGS84 = Transformer.from_crs("EPSG:25832", "EPSG:4326", always_xy=True)
+
+SPARQL_PREFIXES = """
+PREFIX uhi:  <https://w3id.org/stuttgart-uhi#>
+PREFIX bot:  <https://w3id.org/bot#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX geo:  <http://www.opengis.net/ont/geosparql#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+"""
+
+
+def local_name(uri) -> str:
+    text = str(uri)
+    return text.rsplit("#", 1)[-1].rstrip("/").rsplit("/", 1)[-1]
 
 
 def wkt_to_latlon(wkt: str) -> tuple[float, float] | None:
-    """Parse 'POINT(E N)' in UTM32 → (lat, lon)."""
     m = re.search(r"POINT\(([0-9.]+)\s+([0-9.]+)\)", wkt)
     if not m:
         return None
@@ -37,100 +47,115 @@ def run_queries(g: Graph) -> None:
     print("SPARQL query results")
     print("=" * 60)
 
-    Q1 = """
-    PREFIX uhi:  <http://example.org/uhi#>
-    PREFIX sosa: <http://www.w3.org/ns/sosa/>
-    PREFIX bot:  <https://w3id.org/bot#>
-
+    Q1 = SPARQL_PREFIXES + """
     SELECT ?zone
-           (COUNT(DISTINCT ?b)   AS ?total_bldg)
-           (COUNT(DISTINCT ?vb)  AS ?vuln_bldg)
+           (COUNT(DISTINCT ?b) AS ?total_bldg)
+           (COUNT(DISTINCT ?vb) AS ?vuln_bldg)
            (COUNT(DISTINCT ?obs) AS ?heat_days)
     WHERE {
-        ?b  a bot:Building ; uhi:inSubdistrict ?zone .
+        ?b a bot:Building ;
+           uhi:inAnalysisZone ?zone .
+
         ?obs a uhi:HeatDayObservation ;
              sosa:hasFeatureOfInterest ?zone .
-        OPTIONAL { ?vb a uhi:VulnerableBuilding ;
-                       uhi:inSubdistrict ?zone . }
+
+        OPTIONAL {
+            ?vb a uhi:VulnerableBuilding ;
+                uhi:inAnalysisZone ?zone .
+        }
     }
     GROUP BY ?zone
     ORDER BY DESC(?vuln_bldg)
     """
-    print("\nQ1 — Zone risk summary (3-layer join: buildings × climate × inference)")
+
+    print("\nQ1 — Zone risk summary")
     print(f"  {'Zone':<30} {'Total':>6} {'Vuln':>6} {'HeatDays':>9}")
-    print(f"  {'-'*30} {'-'*6} {'-'*6} {'-'*9}")
     for row in g.query(Q1):
-        zone = str(row.zone).split("#")[-1]
-        print(f"  {zone:<30} {int(row.total_bldg):>6} {int(row.vuln_bldg):>6} {int(row.heat_days):>9}")
+        print(
+            f"  {local_name(row.zone):<30} "
+            f"{int(row.total_bldg):>6} "
+            f"{int(row.vuln_bldg):>6} "
+            f"{int(row.heat_days):>9}"
+        )
 
-    Q2 = """
-    PREFIX uhi: <http://example.org/uhi#>
-    PREFIX bot: <https://w3id.org/bot#>
-
+    Q2 = SPARQL_PREFIXES + """
     SELECT ?zone ?rf (COUNT(DISTINCT ?b) AS ?n)
     WHERE {
         ?b a bot:Building ;
-           uhi:inSubdistrict ?zone ;
+           uhi:inAnalysisZone ?zone ;
            uhi:hasRiskFactor ?rf .
     }
     GROUP BY ?zone ?rf
     ORDER BY ?zone DESC(?n)
     """
+
     print("\nQ2 — Risk factor count per zone")
     print(f"  {'Zone':<30} {'Risk factor':<25} {'Buildings':>9}")
-    print(f"  {'-'*30} {'-'*25} {'-'*9}")
     for row in g.query(Q2):
-        zone = str(row.zone).split("#")[-1]
-        rf   = str(row.rf).split("#")[-1].replace("Instance", "")
-        print(f"  {zone:<30} {rf:<25} {int(row.n):>9}")
+        print(
+            f"  {local_name(row.zone):<30} "
+            f"{local_name(row.rf).replace('Instance', ''):<25} "
+            f"{int(row.n):>9}"
+        )
 
-    Q3 = """
-    PREFIX uhi:  <http://example.org/uhi#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-
-    SELECT ?roofLabel (COUNT(?b) AS ?n) WHERE {
-        ?b  a uhi:VulnerableBuilding ;
-            uhi:hasRoofType ?rt .
+    Q3 = SPARQL_PREFIXES + """
+    SELECT ?roofLabel (COUNT(?b) AS ?n)
+    WHERE {
+        ?b a uhi:VulnerableBuilding ;
+           uhi:hasRoofType ?rt .
         ?rt rdfs:label ?roofLabel .
         FILTER(LANG(?roofLabel) = "en")
     }
     GROUP BY ?roofLabel
     ORDER BY DESC(?n)
     """
+
     print("\nQ3 — Roof types of vulnerable buildings")
     for row in g.query(Q3):
         print(f"  {str(row.roofLabel):<30} {int(row.n):>4}")
 
-    Q4_vuln = """
-    PREFIX uhi: <http://example.org/uhi#>
-    SELECT (AVG(?h) AS ?avg_h) (AVG(?fp) AS ?avg_fp)
-           (MAX(?h) AS ?max_h) (MAX(?fp) AS ?max_fp) WHERE {
+    Q4_VULN = SPARQL_PREFIXES + """
+    SELECT (AVG(?h) AS ?avg_h)
+           (AVG(?fp) AS ?avg_fp)
+           (MAX(?h) AS ?max_h)
+           (MAX(?fp) AS ?max_fp)
+    WHERE {
         ?b a uhi:VulnerableBuilding ;
-           uhi:measuredHeight ?h ;
-           uhi:footprintArea  ?fp .
-    }"""
-    Q4_all = """
-    PREFIX uhi: <http://example.org/uhi#>
-    PREFIX bot: <https://w3id.org/bot#>
-    SELECT (AVG(?h) AS ?avg_h) (AVG(?fp) AS ?avg_fp) WHERE {
-        ?b a bot:Building ;
-           uhi:measuredHeight ?h ;
-           uhi:footprintArea  ?fp .
-    }"""
-    print("\nQ4 — Geometry stats: vulnerable vs. all buildings")
-    for row in g.query(Q4_vuln):
-        print(f"  Vulnerable — avg height: {float(row.avg_h):.1f} m  "
-              f"avg footprint: {float(row.avg_fp):.0f} m²  "
-              f"max height: {float(row.max_h):.1f} m  "
-              f"max footprint: {float(row.max_fp):.0f} m²")
-    for row in g.query(Q4_all):
-        print(f"  All bldgs  — avg height: {float(row.avg_h):.1f} m  "
-              f"avg footprint: {float(row.avg_fp):.0f} m²")
+           uhi:hasMeasuredHeight ?h ;
+           uhi:hasFootprintArea ?fp .
+    }
+    """
 
-    Q5 = """
-    PREFIX uhi:  <http://example.org/uhi#>
-    PREFIX sosa: <http://www.w3.org/ns/sosa/>
-    SELECT ?zone (MAX(?t) AS ?max_t) (COUNT(?obs) AS ?heat_days) WHERE {
+    Q4_ALL = SPARQL_PREFIXES + """
+    SELECT (AVG(?h) AS ?avg_h)
+           (AVG(?fp) AS ?avg_fp)
+    WHERE {
+        ?b a bot:Building ;
+           uhi:hasMeasuredHeight ?h ;
+           uhi:hasFootprintArea ?fp .
+    }
+    """
+
+    print("\nQ4 — Geometry stats: vulnerable vs. all buildings")
+    for row in g.query(Q4_VULN):
+        print(
+            f"  Vulnerable — avg height: {float(row.avg_h):.1f} m  "
+            f"avg footprint: {float(row.avg_fp):.0f} m²  "
+            f"max height: {float(row.max_h):.1f} m  "
+            f"max footprint: {float(row.max_fp):.0f} m²"
+        )
+
+    for row in g.query(Q4_ALL):
+        print(
+            f"  All bldgs  — avg height: {float(row.avg_h):.1f} m  "
+            f"avg footprint: {float(row.avg_fp):.0f} m²"
+        )
+
+    Q5 = SPARQL_PREFIXES + """
+    SELECT ?zone
+           (MAX(?t) AS ?max_t)
+           (COUNT(?obs) AS ?heat_days)
+    WHERE {
         ?obs a uhi:HeatDayObservation ;
              sosa:hasFeatureOfInterest ?zone ;
              sosa:hasSimpleResult ?t .
@@ -138,28 +163,77 @@ def run_queries(g: Graph) -> None:
     GROUP BY ?zone
     ORDER BY DESC(?max_t)
     """
+
     print("\nQ5 — Peak temperature and heat days per zone")
     print(f"  {'Zone':<30} {'Max temp':>9} {'Heat days':>10}")
-    print(f"  {'-'*30} {'-'*9} {'-'*10}")
     for row in g.query(Q5):
-        zone = str(row.zone).split("#")[-1]
-        print(f"  {zone:<30} {float(row.max_t):>8.1f}°C {int(row.heat_days):>10}")
+        print(
+            f"  {local_name(row.zone):<30} "
+            f"{float(row.max_t):>8.1f}°C "
+            f"{int(row.heat_days):>10}"
+        )
+
+    Q6 = SPARQL_PREFIXES + """
+    SELECT ?b
+           (GROUP_CONCAT(DISTINCT ?factorLabel; separator=", ") AS ?factors)
+           (SAMPLE(?h) AS ?height)
+           (SAMPLE(?fp) AS ?footprint)
+    WHERE {
+        ?b a uhi:VulnerableBuilding ;
+           uhi:hasRiskFactor ?rf ;
+           uhi:hasMeasuredHeight ?h ;
+           uhi:hasFootprintArea ?fp .
+        OPTIONAL {
+            ?rf rdfs:label ?factorLabel .
+            FILTER(LANG(?factorLabel) = "en")
+        }
+    }
+    GROUP BY ?b
+    ORDER BY DESC(?height)
+    LIMIT 15
+    """
+
+    print("\nQ6 — Explainability sample: why selected buildings are vulnerable")
+    print(f"  {'Building':<24} {'Risk factors':<60} {'Height':>8} {'Footprint':>10}")
+    for row in g.query(Q6):
+        print(
+            f"  {local_name(row.b):<24} "
+            f"{str(row.factors):<60} "
+            f"{float(row.height):>7.1f}m "
+            f"{float(row.footprint):>9.0f}m²"
+        )
+
+
+def risk_factor_labels(g: Graph, building_uri) -> list[str]:
+    Q = SPARQL_PREFIXES + """
+    SELECT ?label WHERE {
+        VALUES ?b { <%s> }
+        ?b uhi:hasRiskFactor ?rf .
+        OPTIONAL {
+            ?rf rdfs:label ?label .
+            FILTER(LANG(?label) = "en")
+        }
+    }
+    ORDER BY ?label
+    """ % str(building_uri)
+
+    labels = []
+    for row in g.query(Q):
+        labels.append(str(row.label) if row.label else "Risk factor")
+    return labels
 
 
 def build_map(g: Graph) -> None:
     print("\nBuilding map …")
 
-    Q_MAP = """
-    PREFIX uhi: <http://example.org/uhi#>
-    PREFIX bot: <https://w3id.org/bot#>
-    PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-
-    SELECT ?b ?wkt ?h ?fp ?zone ?vuln WHERE {
-        ?b  a bot:Building ;
-            uhi:measuredHeight ?h ;
-            uhi:footprintArea  ?fp ;
-            uhi:inSubdistrict  ?zone ;
-            geo:hasGeometry    ?geom .
+    Q_MAP = SPARQL_PREFIXES + """
+    SELECT ?b ?wkt ?h ?fp ?zone ?vuln
+    WHERE {
+        ?b a bot:Building ;
+           uhi:hasMeasuredHeight ?h ;
+           uhi:hasFootprintArea ?fp ;
+           uhi:inAnalysisZone ?zone ;
+           geo:hasGeometry ?geom .
         ?geom geo:asWKT ?wkt .
         BIND(EXISTS { ?b a uhi:VulnerableBuilding } AS ?vuln)
     }
@@ -178,8 +252,14 @@ def build_map(g: Graph) -> None:
         tiles="CartoDB positron",
     )
 
-    layer_vuln   = folium.FeatureGroup(name="Vulnerable buildings (inferred by HermiT)", show=True)
-    layer_normal = folium.FeatureGroup(name="Other buildings", show=True)
+    layer_vuln = folium.FeatureGroup(
+        name="Vulnerable buildings (reasoning-inferred)",
+        show=True,
+    )
+    layer_normal = folium.FeatureGroup(
+        name="Other buildings",
+        show=True,
+    )
 
     skipped = 0
     plotted = 0
@@ -189,29 +269,37 @@ def build_map(g: Graph) -> None:
     print(f"  Plotting {len(rows)} buildings …")
 
     for row in rows:
-        wkt_str = str(row.wkt)
-        ll = wkt_to_latlon(wkt_str)
+        ll = wkt_to_latlon(str(row.wkt))
         if ll is None:
             skipped += 1
             continue
 
         lat, lon = ll
-        height   = float(row.h)
-        fp       = float(row.fp)
-        zone_id  = str(row.zone).split("#")[-1]
-        is_vuln  = str(row.vuln).lower() == "true"
-        bldg_id  = str(row.b).split("#")[-1]
+        height = float(row.h)
+        footprint = float(row.fp)
+        zone_id = local_name(row.zone)
+        building_id = local_name(row.b)
+        is_vulnerable = str(row.vuln).lower() == "true"
+
+        factors_html = ""
+        if is_vulnerable:
+            factors = risk_factor_labels(g, row.b)
+            if factors:
+                factors_html = "<br><b>Risk factors:</b><br>" + "<br>".join(
+                    f"• {factor}" for factor in factors
+                )
 
         popup_html = (
-            f"<b>{bldg_id}</b><br>"
+            f"<b>{building_id}</b><br>"
             f"Height: {height:.1f} m<br>"
-            f"Footprint: {fp:.0f} m²<br>"
+            f"Footprint: {footprint:.0f} m²<br>"
             f"Zone: {zone_id}<br>"
-            f"<b style='color:{'red' if is_vuln else 'gray'}'>"
-            f"{'⚠ VulnerableBuilding' if is_vuln else 'Normal'}</b>"
+            f"<b style='color:{'red' if is_vulnerable else 'gray'}'>"
+            f"{'⚠ VulnerableBuilding' if is_vulnerable else 'Normal'}</b>"
+            f"{factors_html}"
         )
 
-        if is_vuln:
+        if is_vulnerable:
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=6,
@@ -220,8 +308,8 @@ def build_map(g: Graph) -> None:
                 fill_color="#e74c3c",
                 fill_opacity=0.85,
                 weight=1.5,
-                popup=folium.Popup(popup_html, max_width=220),
-                tooltip=f"⚠ {bldg_id} ({height:.0f}m, {fp:.0f}m²)",
+                popup=folium.Popup(popup_html, max_width=260),
+                tooltip=f"⚠ {building_id} ({height:.0f}m, {footprint:.0f}m²)",
             ).add_to(layer_vuln)
             vuln_count += 1
         else:
@@ -247,7 +335,7 @@ def build_map(g: Graph) -> None:
                 border:1px solid #ccc;font-family:sans-serif;font-size:13px;">
       <b>Stuttgart Heat Risk KG</b><br>
       <span style="color:#e74c3c">&#9679;</span> Vulnerable building
-            (HermiT inferred: &#8805;2 risk factors)<br>
+            (reasoning-inferred: &#8805;2 risk factors)<br>
       <span style="color:#3186cc">&#9679;</span> Zone 513/5402 (SW)<br>
       <span style="color:#e07b39">&#9679;</span> Zone 513/5403 (NW)<br>
       <span style="color:#5baa57">&#9679;</span> Zone 514/5402 (SE)<br>
@@ -265,9 +353,21 @@ def build_map(g: Graph) -> None:
     print(f"  Map saved: {MAP_FILE.name}")
 
 
-def main():
+def main() -> None:
     print("Loading graph …")
+
     g = Graph()
+    for prefix, ns in [
+        ("uhi", UHI),
+        ("bot", BOT),
+        ("sosa", SOSA),
+        ("geo", GEO),
+        ("alkis", ALKIS),
+        ("ex", EX),
+        ("xsd", XSD),
+    ]:
+        g.bind(prefix, ns)
+
     g.parse(str(TTL_FILE), format="turtle")
     print(f"  {len(g)} triples")
 

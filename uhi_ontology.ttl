@@ -1,225 +1,523 @@
-@prefix owl:  <http://www.w3.org/2002/07/owl#> .
-@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix bot:  <https://w3id.org/bot#> .
-@prefix sosa: <http://www.w3.org/ns/sosa/> .
-@prefix geo:  <http://www.opengis.net/ont/geosparql#> .
-@prefix qudt: <http://qudt.org/schema/qudt/> .
-@prefix unit: <http://qudt.org/vocab/unit/> .
-@prefix uhi:  <http://example.org/uhi#> .
-@prefix alkis: <http://example.org/alkis#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+@prefix bot:   <https://w3id.org/bot#> .
+@prefix sosa:  <http://www.w3.org/ns/sosa/> .
+@prefix geo:   <http://www.opengis.net/ont/geosparql#> .
+@prefix qudt:  <http://qudt.org/schema/qudt/> .
+@prefix unit:  <http://qudt.org/vocab/unit/> .
+@prefix uhi:   <https://w3id.org/stuttgart-uhi#> .
+@prefix alkis: <https://w3id.org/stuttgart-uhi/alkis/> .
 
-<http://example.org/uhi>
+<https://w3id.org/stuttgart-uhi>
     a owl:Ontology ;
-    rdfs:label "Urban Heat Island Risk Ontology (Stuttgart)" ;
-    rdfs:comment "Extends BOT + SOSA + GeoSPARQL to model building-level heat risk for Stuttgart-Mitte." ;
+    rdfs:label "Urban Heat Island Risk Ontology (Stuttgart)"@en ;
+    rdfs:comment "Extends BOT, SOSA and GeoSPARQL to model building-level and zone-level urban heat island risk. The ontology supports CityGML-derived building data, Open-Meteo climate observations, OSM vegetation indicators and explainable heat-risk reasoning."@en ;
     owl:imports <https://w3id.org/bot> ;
-    owl:versionInfo "0.1" .
+    owl:versionInfo "0.3" .
 
+#################################################################
+# External vocabulary alignment
+#################################################################
 
-uhi:CityDistrict a owl:Class ;
-    rdfs:subClassOf bot:Zone ;
-    rdfs:label "City district" ;
-    rdfs:comment "A named administrative sub-district of Stuttgart (Stadtbezirk)." .
-
-uhi:AnalysisTile a owl:Class ;
-    rdfs:subClassOf bot:Zone ;
-    rdfs:label "LoD2 tile" ;
-    rdfs:comment "A 1 km × 1 km CityGML tile from LGL BW." .
-
-# Building already defined by BOT; we assert it is also geo:Feature
 bot:Building rdfs:subClassOf geo:Feature .
-
-
-uhi:measuredHeight a owl:DatatypeProperty ;
-    rdfs:domain bot:Building ;
-    rdfs:range  xsd:decimal ;
-    rdfs:label  "measured height (m)" .
-
-uhi:footprintArea a owl:DatatypeProperty ;
-    rdfs:domain bot:Building ;
-    rdfs:range  xsd:decimal ;
-    rdfs:label  "footprint area (m²)" .
-
-uhi:alkisId a owl:DatatypeProperty ;
-    rdfs:domain bot:Building ;
-    rdfs:range  xsd:string ;
-    rdfs:label  "ALKIS / GML identifier" .
-
-uhi:gemeindeschluessel a owl:DatatypeProperty ;
-    rdfs:domain bot:Building ;
-    rdfs:range  xsd:string ;
-    rdfs:label  "Gemeindeschlüssel (municipality code)" .
 
 geo:hasGeometry a owl:ObjectProperty ;
     rdfs:domain geo:Feature ;
-    rdfs:range  geo:Geometry .
+    rdfs:range geo:Geometry .
 
 geo:asWKT a owl:DatatypeProperty ;
     rdfs:domain geo:Geometry ;
-    rdfs:range  geo:wktLiteral .
+    rdfs:range geo:wktLiteral .
 
+#################################################################
+# Spatial analysis units
+#################################################################
+
+uhi:AnalysisZone a owl:Class ;
+    rdfs:subClassOf bot:Zone, geo:Feature, sosa:FeatureOfInterest ;
+    rdfs:label "Analysis zone"@en ;
+    rdfs:comment "A spatial unit used for urban heat island analysis. It may be a CityGML tile, grid cell, administrative district, climate region or another spatial aggregation unit."@en .
+
+uhi:LoD2Tile a owl:Class ;
+    rdfs:subClassOf uhi:AnalysisZone ;
+    rdfs:label "LoD2 tile"@en ;
+    rdfs:comment "A CityGML LoD2 source tile from LGL Baden-Württemberg used as a spatial analysis unit in the current implementation."@en .
+
+uhi:AdministrativeDistrict a owl:Class ;
+    rdfs:subClassOf uhi:AnalysisZone ;
+    rdfs:label "Administrative district"@en ;
+    rdfs:comment "A formally defined municipal or administrative district used as an analysis zone."@en .
+
+uhi:GridCell a owl:Class ;
+    rdfs:subClassOf uhi:AnalysisZone ;
+    rdfs:label "Grid cell"@en ;
+    rdfs:comment "A regular spatial grid cell that can be used as an analysis zone in future expansions."@en .
+
+uhi:ClimateRegion a owl:Class ;
+    rdfs:subClassOf uhi:AnalysisZone ;
+    rdfs:label "Climate region"@en ;
+    rdfs:comment "A spatial unit defined by similar climatic or heat-exposure characteristics."@en .
+
+uhi:inAnalysisZone a owl:ObjectProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range uhi:AnalysisZone ;
+    rdfs:label "is in analysis zone"@en ;
+    rdfs:comment "Relates a building to the spatial analysis unit used for heat-risk aggregation. The current implementation uses LoD2 tiles, but future datasets may use districts, grid cells or climate regions."@en .
+
+uhi:inSubdistrict a owl:ObjectProperty ;
+    owl:deprecated true ;
+    rdfs:subPropertyOf uhi:inAnalysisZone ;
+    rdfs:domain bot:Building ;
+    rdfs:range uhi:AnalysisZone ;
+    rdfs:label "building is in sub-district"@en ;
+    rdfs:comment "Deprecated compatibility property. Use uhi:inAnalysisZone instead."@en .
+
+#################################################################
+# Building attributes
+#################################################################
+
+uhi:hasAlkisId a owl:DatatypeProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:string ;
+    rdfs:label "has ALKIS / GML identifier"@en .
+
+uhi:hasGemeindeschluessel a owl:DatatypeProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:string ;
+    rdfs:label "has municipality code"@en .
+
+uhi:hasMeasuredHeight a owl:DatatypeProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has measured height"@en ;
+    rdfs:comment "Measured building height in metres, derived from CityGML LoD2 geometry attributes."@en .
+
+uhi:hasFootprintArea a owl:DatatypeProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has footprint area"@en ;
+    rdfs:comment "Horizontal footprint area of a building in square metres."@en .
+
+uhi:alkisId a owl:DatatypeProperty ;
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasAlkisId ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:string ;
+    rdfs:label "ALKIS / GML identifier"@en .
+
+uhi:gemeindeschluessel a owl:DatatypeProperty ;
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasGemeindeschluessel ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:string ;
+    rdfs:label "Gemeindeschlüssel"@de .
+
+uhi:measuredHeight a owl:DatatypeProperty ;
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasMeasuredHeight ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "measured height"@en .
+
+uhi:footprintArea a owl:DatatypeProperty ;
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasFootprintArea ;
+    rdfs:domain bot:Building ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "footprint area"@en .
+
+#################################################################
+# Roof types and building functions from ALKIS
+#################################################################
 
 uhi:RoofType a owl:Class ;
-    rdfs:label "Roof type" .
-
-alkis:Flachdach a uhi:RoofType ;
-    rdfs:label "Flat roof"@en , "Flachdach"@de ;
-    uhi:alkisCode "1000" .
-
-alkis:Pultdach a uhi:RoofType ;
-    rdfs:label "Monopitch roof"@en , "Pultdach"@de ;
-    uhi:alkisCode "2100" .
-
-alkis:Tonnendach a uhi:RoofType ;
-    rdfs:label "Barrel vault roof"@en , "Tonnendach"@de ;
-    uhi:alkisCode "3100" .
-
-alkis:Kuppeldach a uhi:RoofType ;
-    rdfs:label "Dome roof"@en , "Kuppeldach"@de ;
-    uhi:alkisCode "3200" .
-
-alkis:Mansarddach a uhi:RoofType ;
-    rdfs:label "Mansard roof"@en , "Mansarddach"@de ;
-    uhi:alkisCode "3500" .
-
-alkis:Zeltdach a uhi:RoofType ;
-    rdfs:label "Pyramid/tent roof"@en , "Zeltdach"@de ;
-    uhi:alkisCode "4000" .
-
-alkis:Mischform a uhi:RoofType ;
-    rdfs:label "Mixed/complex roof form"@en , "Mischform"@de ;
-    uhi:alkisCode "5000" .
-
-alkis:UnbekannterDachtyp a uhi:RoofType ;
-    rdfs:label "Unknown roof type"@en , "Unbekannt"@de ;
-    uhi:alkisCode "9999" .
+    rdfs:label "Roof type"@en ;
+    rdfs:comment "Controlled vocabulary for ALKIS roof-type codes used in CityGML LoD2 buildings."@en .
 
 uhi:alkisCode a owl:DatatypeProperty ;
     rdfs:domain uhi:RoofType ;
-    rdfs:range  xsd:string .
+    rdfs:range xsd:string ;
+    rdfs:label "ALKIS code"@en .
 
-uhi:hasRoofType a owl:ObjectProperty ;
+uhi:hasRoofType a owl:ObjectProperty, owl:FunctionalProperty ;
     rdfs:domain bot:Building ;
-    rdfs:range  uhi:RoofType ;
-    rdfs:label  "has roof type" .
+    rdfs:range uhi:RoofType ;
+    rdfs:label "has roof type"@en .
 
+alkis:Flachdach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Flat roof"@en, "Flachdach"@de ;
+    uhi:alkisCode "1000" .
+
+alkis:Pultdach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Monopitch roof"@en, "Pultdach"@de ;
+    uhi:alkisCode "2100" .
+
+alkis:Tonnendach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Barrel vault roof"@en, "Tonnendach"@de ;
+    uhi:alkisCode "3100" .
+
+alkis:Kuppeldach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Dome roof"@en, "Kuppeldach"@de ;
+    uhi:alkisCode "3200" .
+
+alkis:Mansarddach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Mansard roof"@en, "Mansarddach"@de ;
+    uhi:alkisCode "3500" .
+
+alkis:Zeltdach a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Pyramid/tent roof"@en, "Zeltdach"@de ;
+    uhi:alkisCode "4000" .
+
+alkis:Mischform a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Mixed/complex roof form"@en, "Mischform"@de ;
+    uhi:alkisCode "5000" .
+
+alkis:UnbekannterDachtyp a owl:NamedIndividual, uhi:RoofType ;
+    rdfs:label "Unknown roof type"@en, "Unbekannt"@de ;
+    uhi:alkisCode "9999" .
 
 uhi:BuildingFunction a owl:Class ;
-    rdfs:label "Building function" .
+    rdfs:label "Building function"@en ;
+    rdfs:comment "Controlled vocabulary for generalized ALKIS building-use categories."@en .
 
-alkis:Wohngebaeude a uhi:BuildingFunction ;
-    rdfs:label "Residential building"@en , "Wohngebäude"@de ;
-    rdfs:comment "ALKIS prefix 31001" .
-
-alkis:GewerblichesGebaeude a uhi:BuildingFunction ;
-    rdfs:label "Commercial/industrial building"@en , "Gewerbliches Gebäude"@de ;
-    rdfs:comment "ALKIS prefix 51009" .
-
-alkis:OeffentlichesGebaeude a uhi:BuildingFunction ;
-    rdfs:label "Public building"@en , "Öffentliches Gebäude"@de .
-
-alkis:UnbekannteFunktion a uhi:BuildingFunction ;
-    rdfs:label "Unknown function"@en , "Unbekannte Funktion"@de .
+uhi:hasBuildingFunction a owl:ObjectProperty ;
+    rdfs:domain bot:Building ;
+    rdfs:range uhi:BuildingFunction ;
+    rdfs:label "has building function"@en .
 
 uhi:hasFunction a owl:ObjectProperty ;
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasBuildingFunction ;
     rdfs:domain bot:Building ;
-    rdfs:range  uhi:BuildingFunction ;
-    rdfs:label  "has building function" .
+    rdfs:range uhi:BuildingFunction ;
+    rdfs:label "has function"@en .
 
+alkis:Wohngebaeude a owl:NamedIndividual, uhi:BuildingFunction ;
+    rdfs:label "Residential building"@en, "Wohngebäude"@de ;
+    rdfs:comment "Generalized ALKIS residential-building category, e.g. prefix 31001."@en .
+
+alkis:GewerblichesGebaeude a owl:NamedIndividual, uhi:BuildingFunction ;
+    rdfs:label "Commercial/industrial building"@en, "Gewerbliches Gebäude"@de ;
+    rdfs:comment "Generalized ALKIS commercial or industrial category, e.g. prefix 51009."@en .
+
+alkis:OeffentlichesGebaeude a owl:NamedIndividual, uhi:BuildingFunction ;
+    rdfs:label "Public building"@en, "Öffentliches Gebäude"@de .
+
+alkis:UnbekannteFunktion a owl:NamedIndividual, uhi:BuildingFunction ;
+    rdfs:label "Unknown function"@en, "Unbekannte Funktion"@de .
+
+#################################################################
+# Heat risk factors
+#################################################################
 
 uhi:HeatRiskFactor a owl:Class ;
-    rdfs:label "Heat risk factor" ;
-    rdfs:comment "A property of a building that contributes to urban heat island risk." .
+    rdfs:label "Heat risk factor"@en ;
+    rdfs:comment "A modeled factor that contributes to urban heat island risk."@en .
+
+uhi:BuildingHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:HeatRiskFactor ;
+    rdfs:label "Building heat risk factor"@en ;
+    rdfs:comment "A heat-risk factor attached directly to a building."@en .
+
+uhi:ZoneHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:HeatRiskFactor ;
+    rdfs:label "Zone heat risk factor"@en ;
+    rdfs:comment "A heat-risk factor attached to an analysis zone rather than an individual building."@en .
+
+uhi:RoofHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:BuildingHeatRiskFactor ;
+    rdfs:label "Roof heat risk factor"@en ;
+    rdfs:comment "A building-level heat-risk factor caused by roof form, roof material or roof exposure."@en .
+
+uhi:GeometryHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:BuildingHeatRiskFactor ;
+    rdfs:label "Geometry heat risk factor"@en ;
+    rdfs:comment "A building-level heat-risk factor caused by size, height or urban canyon geometry."@en .
+
+uhi:SurfaceHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:ZoneHeatRiskFactor ;
+    rdfs:label "Surface heat risk factor"@en ;
+    rdfs:comment "A zone-level heat-risk factor caused by impervious or heat-retaining surface composition."@en .
+
+uhi:VegetationHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:ZoneHeatRiskFactor ;
+    rdfs:label "Vegetation heat risk factor"@en ;
+    rdfs:comment "A zone-level heat-risk factor caused by limited vegetation and reduced evapotranspirative cooling."@en .
+
+uhi:ClimateHeatRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:ZoneHeatRiskFactor ;
+    rdfs:label "Climate heat risk factor"@en ;
+    rdfs:comment "A zone-level heat-risk factor caused by observed or modeled heat exposure."@en .
 
 uhi:HighAbsorptionRoof a owl:Class ;
-    rdfs:subClassOf uhi:HeatRiskFactor ;
-    rdfs:label "High solar absorption roof" ;
-    rdfs:comment "Flat roof — maximum solar gain, minimal self-shading, poor nighttime radiation." .
+    rdfs:subClassOf uhi:RoofHeatRiskFactor ;
+    rdfs:label "High solar absorption roof"@en ;
+    rdfs:comment "Building-level risk factor associated with flat roofs, high solar gain and limited self-shading."@en .
+
+uhi:FlatRoofRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:HighAbsorptionRoof ;
+    rdfs:label "Flat roof risk factor"@en ;
+    rdfs:comment "Risk factor assigned to buildings with flat roofs."@en .
 
 uhi:LargeFootprint a owl:Class ;
-    rdfs:subClassOf uhi:HeatRiskFactor ;
-    rdfs:label "Large sealed footprint" ;
-    rdfs:comment "Footprint > 500 m² — contributes disproportionately to surface sealing and heat retention." .
+    rdfs:subClassOf uhi:GeometryHeatRiskFactor ;
+    rdfs:label "Large sealed footprint"@en ;
+    rdfs:comment "Building-level risk factor for footprints greater than 500 m²."@en .
+
+uhi:LargeFootprintRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:LargeFootprint ;
+    rdfs:label "Large footprint risk factor"@en ;
+    rdfs:comment "Risk factor assigned to buildings whose footprint area exceeds the project threshold."@en .
 
 uhi:TallBuilding a owl:Class ;
-    rdfs:subClassOf uhi:HeatRiskFactor ;
-    rdfs:label "Tall building" ;
-    rdfs:comment "Height > 20 m — contributes to urban canyon geometry, trapping longwave radiation at street level." .
+    rdfs:subClassOf uhi:GeometryHeatRiskFactor ;
+    rdfs:label "Tall building"@en ;
+    rdfs:comment "Building-level risk factor for heights greater than 20 m, representing urban canyon effects and longwave radiation trapping."@en .
+
+uhi:TallBuildingRiskFactor a owl:Class ;
+    rdfs:subClassOf uhi:TallBuilding ;
+    rdfs:label "Tall building risk factor"@en ;
+    rdfs:comment "Risk factor assigned to buildings whose measured height exceeds the project threshold."@en .
+
+uhi:ImperviousSurface a owl:Class ;
+    rdfs:subClassOf uhi:SurfaceHeatRiskFactor ;
+    rdfs:label "Impervious surface"@en ;
+    rdfs:comment "Zone-level risk factor representing a high share of sealed surfaces such as roads, roofs and pavement."@en .
+
+uhi:LowVegetationCoverage a owl:Class ;
+    rdfs:subClassOf uhi:VegetationHeatRiskFactor ;
+    rdfs:label "Low vegetation coverage"@en ;
+    rdfs:comment "Zone-level risk factor representing limited vegetation and reduced cooling potential."@en .
+
+uhi:HighHeatExposure a owl:Class ;
+    rdfs:subClassOf uhi:ClimateHeatRiskFactor ;
+    rdfs:label "High heat exposure"@en ;
+    rdfs:comment "Zone-level risk factor representing frequent or intense heat-day observations."@en .
 
 uhi:hasRiskFactor a owl:ObjectProperty ;
     rdfs:domain bot:Building ;
-    rdfs:range  uhi:HeatRiskFactor ;
-    rdfs:label  "has heat risk factor" .
+    rdfs:range uhi:BuildingHeatRiskFactor ;
+    rdfs:label "has building heat risk factor"@en ;
+    rdfs:comment "Relates a building to a building-level heat-risk factor used for VulnerableBuilding inference."@en .
 
+uhi:hasZoneRiskFactor a owl:ObjectProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range uhi:ZoneHeatRiskFactor ;
+    rdfs:label "has zone heat risk factor"@en ;
+    rdfs:comment "Relates an analysis zone to a zone-level heat-risk factor such as low vegetation coverage, high imperviousness or high heat exposure."@en .
 
-# VulnerableBuilding is inferred by a DL reasoner (HermiT), never asserted — owl:minQualifiedCardinality 2 on uhi:hasRiskFactor
+uhi:FlatRoofInstance a owl:NamedIndividual, uhi:FlatRoofRiskFactor ;
+    rdfs:label "Flat roof risk factor"@en ;
+    rdfs:comment "Reusable individual assigned to buildings with flat roofs."@en .
+
+uhi:LargeFootprintInstance a owl:NamedIndividual, uhi:LargeFootprintRiskFactor ;
+    rdfs:label "Large footprint risk factor"@en ;
+    rdfs:comment "Reusable individual assigned to buildings with footprint area above 500 m²."@en .
+
+uhi:TallBuildingInstance a owl:NamedIndividual, uhi:TallBuildingRiskFactor ;
+    rdfs:label "Tall building risk factor"@en ;
+    rdfs:comment "Reusable individual assigned to buildings with measured height above 20 m."@en .
+
+uhi:LowVegetationCoverageInstance a owl:NamedIndividual, uhi:LowVegetationCoverage ;
+    rdfs:label "Low vegetation coverage risk factor"@en ;
+    rdfs:comment "Reusable individual assigned to analysis zones whose vegetation fraction is below the project threshold."@en .
+
+uhi:HighHeatExposureInstance a owl:NamedIndividual, uhi:HighHeatExposure ;
+    rdfs:label "High heat exposure risk factor"@en ;
+    rdfs:comment "Reusable individual assigned to analysis zones with high observed heat exposure."@en .
+
+#################################################################
+# Inferred classes
+#################################################################
+
 uhi:VulnerableBuilding a owl:Class ;
-    rdfs:label "Vulnerable building" ;
-    rdfs:comment "Inferred class: a building with ≥2 heat risk factors. Not asserted directly." ;
+    rdfs:label "Vulnerable building"@en ;
+    rdfs:comment "Inferred class: a building with at least two building-level heat-risk factors. The current factors are flat roof, large footprint and tall building."@en ;
     owl:equivalentClass [
         a owl:Class ;
         owl:intersectionOf (
             bot:Building
-            [   a owl:Restriction ;
-                owl:onProperty uhi:hasRiskFactor ;
-                owl:minQualifiedCardinality 2 ;
-                owl:onClass uhi:HeatRiskFactor
+            [ a owl:Restriction ;
+              owl:onProperty uhi:hasRiskFactor ;
+              owl:minQualifiedCardinality 2 ;
+              owl:onClass uhi:BuildingHeatRiskFactor
             ]
         )
     ] .
 
+#################################################################
+# Climate observations
+#################################################################
 
 uhi:TemperatureObservation a owl:Class ;
     rdfs:subClassOf sosa:Observation ;
-    rdfs:label "Daily temperature observation" .
-
-uhi:DailyMaxTemperature a sosa:ObservableProperty ;
-    rdfs:label "Daily maximum air temperature (°C)" .
+    rdfs:label "Daily temperature observation"@en ;
+    rdfs:comment "SOSA observation representing a daily air-temperature measurement for an analysis zone."@en .
 
 uhi:HeatDayObservation a owl:Class ;
     rdfs:subClassOf uhi:TemperatureObservation ;
-    rdfs:label "Heat day observation" ;
-    rdfs:comment "A temperature observation where the result exceeds 30°C (DWD heat day threshold)." .
+    rdfs:label "Heat day observation"@en ;
+    rdfs:comment "A temperature observation where daily maximum temperature exceeds 30°C, following the DWD heat-day threshold."@en .
 
-uhi:CityDistrict rdfs:subClassOf sosa:FeatureOfInterest .
+uhi:DailyMaxTemperature a sosa:ObservableProperty ;
+    rdfs:label "Daily maximum air temperature"@en ;
+    rdfs:comment "Daily maximum 2 m air temperature in degrees Celsius."@en .
 
+uhi:hasHeatDayCount a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:integer ;
+    rdfs:label "has heat day count"@en ;
+    rdfs:comment "Number of heat-day observations associated with an analysis zone."@en .
+
+uhi:hasMaximumTemperature a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has maximum temperature"@en ;
+    rdfs:comment "Maximum observed daily air temperature for an analysis zone."@en .
+
+#################################################################
+# OSM / surface / vegetation indicators
+#################################################################
+
+uhi:hasVegetationFraction a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has vegetation fraction"@en ;
+    rdfs:comment "Fraction of analysis-zone area covered by vegetation features, usually derived from OSM or land-cover data. Values are expected in the interval 0–1."@en .
+
+uhi:hasVegetationArea a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has vegetation area"@en ;
+    rdfs:comment "Estimated vegetation area within an analysis zone in square metres."@en .
+
+uhi:hasVegetationFeatureCount a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:integer ;
+    rdfs:label "has vegetation feature count"@en ;
+    rdfs:comment "Number of OSM vegetation features intersecting or contained in an analysis zone."@en .
+
+uhi:hasTreeCount a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:integer ;
+    rdfs:label "has tree count"@en ;
+    rdfs:comment "Number of OSM tree nodes in an analysis zone."@en .
+
+uhi:hasImperviousSurfaceFraction a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "has impervious surface fraction"@en ;
+    rdfs:comment "Fraction of analysis-zone area covered by impermeable surfaces such as roofs, roads and paved areas. Values are expected in the interval 0–1."@en .
 
 uhi:impermeableSurfaceFraction a owl:DatatypeProperty ;
-    rdfs:domain uhi:CityDistrict ;
-    rdfs:range  xsd:decimal ;
-    rdfs:label  "impermeable surface fraction (0–1)" ;
-    rdfs:comment "Fraction of zone area covered by impermeable surfaces (roads, roofs, pavement). Derived from OSM." .
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasImperviousSurfaceFraction ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "impermeable surface fraction"@en .
 
 uhi:vegetationFraction a owl:DatatypeProperty ;
-    rdfs:domain uhi:CityDistrict ;
-    rdfs:range  xsd:decimal ;
-    rdfs:label  "vegetation fraction (0–1)" .
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasVegetationFraction ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "vegetation fraction"@en .
 
 uhi:treeCount a owl:DatatypeProperty ;
-    rdfs:domain uhi:CityDistrict ;
-    rdfs:range  xsd:integer ;
-    rdfs:label  "tree count (from OSM nodes)" .
+    owl:deprecated true ;
+    owl:equivalentProperty uhi:hasTreeCount ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:integer ;
+    rdfs:label "tree count"@en .
 
-uhi:inSubdistrict a owl:ObjectProperty ;
-    rdfs:domain bot:Building ;
-    rdfs:range  uhi:CityDistrict ;
-    rdfs:label  "building is in sub-district" .
+uhi:skyViewFactor a owl:DatatypeProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "sky view factor"@en ;
+    rdfs:comment "Dimensionless scalar between 0 and 1 representing the visible fraction of sky from a location or spatial unit. Low values indicate canyon-like conditions that reduce nighttime radiative cooling."@en .
 
 
-# Disjoint sub-classes prevent counting duplicate risk factor types toward the ≥2 minimum
-[   a owl:AllDisjointClasses ;
-    owl:members ( uhi:HighAbsorptionRoof uhi:LargeFootprint uhi:TallBuilding )
+#################################################################
+# Vegetation types for OSM enrichment
+#################################################################
+
+uhi:VegetationType a owl:Class ;
+    rdfs:label "Vegetation type"@en ;
+    rdfs:comment "A reusable category for vegetation features derived from OSM or future land-cover sources. This allows the KG to distinguish trees, parks, grass, forest, meadow, scrub, green roofs and other vegetation types."@en .
+
+uhi:TreeVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Tree vegetation"@en ;
+    rdfs:comment "Vegetation represented by individual tree features, for example OSM natural=tree."@en .
+
+uhi:ParkVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Park vegetation"@en ;
+    rdfs:comment "Vegetation represented by parks or gardens, for example OSM leisure=park or leisure=garden."@en .
+
+uhi:ForestVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Forest or woodland vegetation"@en ;
+    rdfs:comment "Vegetation represented by forest or woodland features, for example OSM landuse=forest or natural=wood."@en .
+
+uhi:GrassVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Grass vegetation"@en ;
+    rdfs:comment "Vegetation represented by grass-covered areas, for example OSM landuse=grass or natural=grassland."@en .
+
+uhi:MeadowVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Meadow vegetation"@en ;
+    rdfs:comment "Vegetation represented by meadow features, for example OSM landuse=meadow."@en .
+
+uhi:ScrubVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Scrub vegetation"@en ;
+    rdfs:comment "Vegetation represented by scrub or shrubland features, for example OSM natural=scrub."@en .
+
+uhi:OrchardVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Orchard or vineyard vegetation"@en ;
+    rdfs:comment "Cultivated vegetation represented by orchards or vineyards, for example OSM landuse=orchard or landuse=vineyard."@en .
+
+uhi:GreenRoofVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Green roof vegetation"@en ;
+    rdfs:comment "Vegetation represented by green roofs. This is included for future extensions even if the current OSM enrichment may not populate it."@en .
+
+uhi:OtherVegetation a owl:NamedIndividual, uhi:VegetationType ;
+    rdfs:label "Other vegetation"@en ;
+    rdfs:comment "Fallback vegetation category for features that do not map cleanly to the predefined categories."@en .
+
+uhi:hasVegetationType a owl:ObjectProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range uhi:VegetationType ;
+    rdfs:label "has vegetation type"@en ;
+    rdfs:comment "Relates an analysis zone to vegetation types detected in that zone. This keeps the ontology extensible for trees, parks, grass, forests, meadows, scrub, green roofs and future vegetation classes."@en .
+
+uhi:hasDominantVegetationType a owl:ObjectProperty ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range uhi:VegetationType ;
+    rdfs:label "has dominant vegetation type"@en ;
+    rdfs:comment "Relates an analysis zone to the vegetation type with the largest estimated area or, when area is unavailable, strongest detected presence."@en .
+
+#################################################################
+# Constraints and distinctness
+#################################################################
+
+[ a owl:AllDisjointClasses ;
+  owl:members (
+      uhi:RoofHeatRiskFactor
+      uhi:GeometryHeatRiskFactor
+      uhi:SurfaceHeatRiskFactor
+      uhi:VegetationHeatRiskFactor
+      uhi:ClimateHeatRiskFactor
+  )
 ] .
 
-# Roof types are disjoint individuals (each building has exactly one)
-[   a owl:AllDifferent ;
-    owl:distinctMembers (
-        alkis:Flachdach alkis:Pultdach alkis:Tonnendach
-        alkis:Kuppeldach alkis:Mansarddach alkis:Zeltdach
-        alkis:Mischform alkis:UnbekannterDachtyp
-    )
+[ a owl:AllDifferent ;
+  owl:distinctMembers (
+      alkis:Flachdach
+      alkis:Pultdach
+      alkis:Tonnendach
+      alkis:Kuppeldach
+      alkis:Mansarddach
+      alkis:Zeltdach
+      alkis:Mischform
+      alkis:UnbekannterDachtyp
+  )
 ] .
-
-uhi:hasRoofType a owl:FunctionalProperty .

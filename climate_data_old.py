@@ -7,24 +7,14 @@ from pathlib import Path
 from rdflib import Graph, Namespace, URIRef, Literal
 from rdflib.namespace import RDF, RDFS, XSD
 
-# -----------------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-TTL_FILE = BASE_DIR / "stuttgart_buildings.ttl"
-
-# -----------------------------------------------------------------------------
-# Namespaces aligned with revised uhi_ontology.ttl
-# -----------------------------------------------------------------------------
-UHI   = Namespace("https://w3id.org/stuttgart-uhi#")
+UHI   = Namespace("http://example.org/uhi#")
 SOSA  = Namespace("http://www.w3.org/ns/sosa/")
-EX    = Namespace("https://w3id.org/stuttgart-uhi/data/")
+EX    = Namespace("http://example.org/data#")
 BOT   = Namespace("https://w3id.org/bot#")
 GEO   = Namespace("http://www.opengis.net/ont/geosparql#")
-ALKIS = Namespace("https://w3id.org/stuttgart-uhi/alkis/")
+ALKIS = Namespace("http://example.org/alkis#")
 
-# Zone centres in WGS84, converted from ETRS89 UTM32 tile centroids.
-# These URIs must match the zone URIs created in citygml_to_rdf.py.
+# Zone centres in WGS84, converted from ETRS89 UTM32 tile centroids
 ZONES = {
     EX.Zone_513_5402: {"lat": 48.7572, "lon": 9.1715, "label": "Stuttgart tile 513/5402 (SW)"},
     EX.Zone_513_5403: {"lat": 48.7662, "lon": 9.1715, "label": "Stuttgart tile 513/5403 (NW)"},
@@ -54,21 +44,7 @@ def fetch_temperatures(lat: float, lon: float) -> dict[str, float | None]:
 
 
 def safe_zone_id(zone_uri: URIRef) -> str:
-    """Return the local name of a zone URI for readable IDs."""
-    uri = str(zone_uri)
-    if "#" in uri:
-        return uri.split("#")[-1]
-    return uri.rstrip("/").split("/")[-1]
-
-
-def ensure_zone_metadata(g: Graph, zone_uri: URIRef, label: str) -> None:
-    """Ensure climate enrichment uses the same analysis-zone model as the ontology."""
-    g.add((zone_uri, RDF.type, UHI.AnalysisZone))
-    g.add((zone_uri, RDF.type, UHI.LoD2Tile))
-    g.add((zone_uri, RDF.type, BOT.Zone))
-    g.add((zone_uri, RDF.type, GEO.Feature))
-    g.add((zone_uri, RDF.type, SOSA.FeatureOfInterest))
-    g.add((zone_uri, RDFS.label, Literal(label, lang="en")))
+    return str(zone_uri).split("#")[-1]
 
 
 def add_climate_triples(g: Graph, zone_uri: URIRef, temps: dict[str, float | None]) -> dict:
@@ -77,12 +53,11 @@ def add_climate_triples(g: Graph, zone_uri: URIRef, temps: dict[str, float | Non
 
     sensor_uri = EX[f"Sensor_{zone_id}"]
     g.add((sensor_uri, RDF.type,    SOSA.Sensor))
-    g.add((sensor_uri, RDFS.label,  Literal(f"Open-Meteo virtual sensor for {zone_id}", lang="en")))
+    g.add((sensor_uri, RDFS.label,  Literal(f"Open-Meteo virtual sensor for {zone_id}")))
     g.add((sensor_uri, RDFS.comment, Literal(
         "Data source: Open-Meteo Historical Weather API "
         "(https://open-meteo.com/en/docs/historical-weather-api). "
-        "Variable: temperature_2m_max. Timezone: Europe/Berlin.",
-        lang="en"
+        "Variable: temperature_2m_max. Timezone: Europe/Berlin."
     )))
 
     for date_str, temp in temps.items():
@@ -102,43 +77,34 @@ def add_climate_triples(g: Graph, zone_uri: URIRef, temps: dict[str, float | Non
             g.add((obs_uri, RDF.type, UHI.HeatDayObservation))
             heat_days.append((date_str, temp))
 
-    valid_temps = [t for t in temps.values() if t is not None]
     return {
-        "obs_count": len(valid_temps),
+        "obs_count": sum(1 for t in temps.values() if t is not None),
         "heat_days": len(heat_days),
-        "max_temp":  max(valid_temps),
+        "max_temp":  max(t for t in temps.values() if t is not None),
         "hottest":   max(heat_days, key=lambda x: x[1]) if heat_days else None,
     }
 
 
 def main():
-    if not TTL_FILE.exists():
-        raise FileNotFoundError(
-            f"Could not find {TTL_FILE}. Run citygml_to_rdf.py first to create the base graph."
-        )
+    TTL_FILE = Path(r"D:\Downloads\AI Lab Project\stuttgart_buildings.ttl")
 
     print("Loading existing graph ...")
     g = Graph()
-    for prefix, ns in [
-        ("uhi", UHI), ("sosa", SOSA), ("ex", EX),
-        ("bot", BOT), ("geo", GEO), ("alkis", ALKIS), ("xsd", XSD)
-    ]:
+    for prefix, ns in [("uhi", UHI), ("sosa", SOSA), ("ex", EX),
+                       ("bot", BOT), ("geo", GEO), ("alkis", ALKIS), ("xsd", XSD)]:
         g.bind(prefix, ns)
-
     g.parse(str(TTL_FILE), format="turtle")
     triples_before = len(g)
     print(f"  {triples_before} triples loaded")
 
-    # Keep observable property explicit in the graph, even though it is also defined in the ontology.
     g.add((UHI.DailyMaxTemperature, RDF.type,    SOSA.ObservableProperty))
-    g.add((UHI.DailyMaxTemperature, RDFS.label,  Literal("Daily maximum air temperature (°C)", lang="en")))
-    g.add((UHI.DailyMaxTemperature, RDFS.comment, Literal("Unit: degrees Celsius", lang="en")))
+    g.add((UHI.DailyMaxTemperature, RDFS.label,  Literal("Daily maximum air temperature")))
+    g.add((UHI.DailyMaxTemperature, RDFS.comment, Literal("Unit: degrees Celsius")))
 
     print(f"\nFetching 2024 climate data for {len(ZONES)} zones ...")
     all_stats = {}
 
     for zone_uri, meta in ZONES.items():
-        ensure_zone_metadata(g, zone_uri, meta["label"])
         zone_id = safe_zone_id(zone_uri)
         print(f"  {zone_id} ... ", end="", flush=True)
         temps = fetch_temperatures(meta["lat"], meta["lon"])
