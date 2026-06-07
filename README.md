@@ -1,66 +1,126 @@
 # Stuttgart Heat Risk Knowledge Graph
 
-Semantic knowledge graph for urban heat island risk analysis in Stuttgart, using CityGML building geometry, OWL DL reasoning, and real climate data. Built for the AI Lab course at the University of Stuttgart.
+Knowledge graph for score-based urban heat island (UHI) risk assessment in Stuttgart-Mitte. The project integrates LoD2 CityGML building geometry, Open-Meteo climate observations, OpenStreetMap vegetation indicators, and computed heat-risk assessments under a shared RDF/OWL model.
+
+The current model no longer classifies vulnerable buildings with a simple “at least two risk factors” rule. Instead, it represents explicit `uhi:HeatRiskAssessment` instances, assigns `uhi:HeatRiskCategory` values, and classifies buildings as `uhi:VulnerableBuilding` when their building-level heat-risk assessment exceeds the project-defined threshold.
 
 ## Overview
 
-The pipeline converts 3D building data (LGL BW LoD2 CityGML) into an RDF knowledge graph, enriches it with 2024 temperature observations from the Open-Meteo archive API, and uses the HermiT OWL DL reasoner to infer heat-vulnerable buildings. All three data layers are unified under a shared zone URI, enabling cross-source SPARQL queries without manual data merging.
+The pipeline creates a unified knowledge graph from three data sources:
 
-**Results (Stuttgart-Mitte, 4 × 1 km² tiles, 2024):**
-- 5,801 buildings converted · 76,399 RDF triples
-- 145 `uhi:VulnerableBuilding` instances inferred by HermiT (≥ 2 distinct heat risk factors)
-- 12 heat days (> 30 °C) confirmed in the hottest zone (Zone 513/5403, NW)
+- **CityGML LoD2**: building geometry, height, footprint, roof type, function, analysis zone
+- **Open-Meteo**: 2024 daily maximum temperature observations and heat-day observations using SOSA
+- **OpenStreetMap**: vegetation fraction, tree count, and vegetation types per analysis zone
 
-## Prerequisites
-
-- Python 3.11+
-- Java 11+ (required by the HermiT reasoner via owlready2)
-- CityGML LoD2 tiles — see **Data** below
-
-```bash
-pip install rdflib owlready2 folium pyproj
-```
+Derived indicators such as Sky View Factor, urban density, basin depth, impervious surface fraction, vegetation fraction, and heat-day count are combined into zone-level and building-level heat-risk assessments.
 
 ## Data
 
-**Source:** LGL Baden-Württemberg — [opengeodata.lgl-bw.de](https://opengeodata.lgl-bw.de)  
+**Building geometry source:** LGL Baden-Württemberg — <https://opengeodata.lgl-bw.de>  
 **Tiles:** `LoD2_32_513_5402_1_BW`, `LoD2_32_513_5403_1_BW`, `LoD2_32_514_5402_1_BW`, `LoD2_32_514_5403_1_BW`  
-**License:** [Datenlizenz Deutschland – Namensnennung – Version 2.0 (dl-de/by-2-0)](https://www.govdata.de/dl-de/by-2-0)
+**License:** Datenlizenz Deutschland – Namensnennung – Version 2.0 (dl-de/by-2-0)
 
-Download the four GML tiles and place them in `LoD2_32_513_5402_2_bw/` (the folder name the scripts expect).
+Place the extracted GML files in:
 
-The derived knowledge graph (`stuttgart_buildings.ttl`) is included in this repository. It is redistributed under the same dl-de/by-2-0 terms with attribution to LGL BW and [Open-Meteo](https://open-meteo.com) (CC BY 4.0).
+```text
+LoD2_32_513_5402_2_bw/
+```
+
+## Installation
+
+Python 3.11+ is recommended.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate      # macOS/Linux
+# .venv\Scripts\activate       # Windows
+pip install -r requirements.txt
+```
 
 ## Pipeline
 
-Run scripts in order. Each script reads and/or writes `stuttgart_buildings.ttl`.
+Run the scripts in order. Each enrichment step reads and writes `stuttgart_buildings.ttl`.
 
-| Script | Purpose | Output |
+| Step | Script | Purpose |
 |---|---|---|
-| `audit.py` | Inspect raw GML tiles; report building counts, height/footprint stats, missing values | Console |
-| `citygml_to_rdf.py` | Parse GML → RDF; compute footprint area, map ALKIS codes, classify risk factors | `stuttgart_buildings.ttl` (created) |
-| `climate_data.py` | Fetch 2024 daily max temperatures from Open-Meteo; add SOSA observations | `stuttgart_buildings.ttl` (enriched) |
-| `reasoning.py` | Run HermiT OWL DL reasoner; materialise `uhi:VulnerableBuilding` instances | `stuttgart_buildings.ttl` (enriched) |
-| `queries_and_viz.py` | Run cross-source SPARQL queries; generate interactive folium map | `stuttgart_heat_risk_map.html` |
+| 1 | `audit.py` | Inspect raw CityGML tiles and report geometry/statistics |
+| 2 | `citygml_to_rdf.py` | Convert LoD2 buildings to RDF and create building/zone triples |
+| 3 | `climate_data.py` | Add Open-Meteo SOSA observations and heat-day observations |
+| 4 | `osm_enrichment.py` | Add OSM vegetation fraction, tree count, and vegetation types |
+| 5 | `risk_assessment.py` | Compute zone/building heat-risk assessments and categories |
+| 6 | `queries_and_viz.py` | Run SPARQL queries and generate an interactive map |
+
+```bash
+python citygml_to_rdf.py
+python climate_data.py
+python osm_enrichment.py
+python risk_assessment.py
+python queries_and_viz.py
+```
+
+`reasoning.py` is kept as a compatibility wrapper and now delegates to `risk_assessment.py`.
 
 ## Ontology
 
-`uhi_ontology.ttl` defines the domain vocabulary under `http://example.org/uhi#`. Key axiom:
+The ontology is stored in `uhi_ontology.ttl` under the namespace:
 
-```turtle
-uhi:VulnerableBuilding owl:equivalentClass [
-    owl:intersectionOf (
-        bot:Building
-        [ owl:onProperty uhi:hasRiskFactor ;
-          owl:minQualifiedCardinality 2 ;
-          owl:onClass uhi:HeatRiskFactor ]
-    )
-] .
+```text
+https://w3id.org/stuttgart-uhi#
 ```
 
-Reused standards: [BOT](https://w3id.org/bot) · [SOSA](https://www.w3.org/TR/vocab-ssn/) · [GeoSPARQL](https://www.ogc.org/standards/geosparql)
+Core classes:
+
+- `uhi:AnalysisZone`
+- `uhi:HeatRiskAssessment`
+- `uhi:ZoneHeatRiskAssessment`
+- `uhi:BuildingHeatRiskAssessment`
+- `uhi:HeatRiskCategory`
+- `uhi:VulnerableBuilding`
+- `uhi:VegetationType`
+
+Core properties:
+
+- `uhi:hasHeatRiskAssessment`
+- `uhi:hasHeatRiskScore`
+- `uhi:hasIndicativeDeltaT`
+- `uhi:hasRiskCategory`
+- `uhi:hasSkyViewFactor`
+- `uhi:hasUrbanDensity`
+- `uhi:hasBasinDepth`
+- `uhi:hasVegetationFraction`
+- `uhi:hasTreeCount`
+- `uhi:hasImperviousSurfaceFraction`
+- `uhi:hasHeatDayCount`
+
+Reused vocabularies:
+
+- BOT for buildings and zones
+- GeoSPARQL for geometry
+- SOSA for climate observations
+
+## Example SPARQL query
+
+```sparql
+PREFIX uhi: <https://w3id.org/stuttgart-uhi#>
+
+SELECT ?building ?category ?score
+WHERE {
+  ?building uhi:hasHeatRiskAssessment ?assessment .
+  ?assessment
+      uhi:hasRiskCategory ?category ;
+      uhi:hasHeatRiskScore ?score .
+  FILTER(?category IN (uhi:HighRisk, uhi:ExtremeRisk))
+}
+ORDER BY DESC(?score)
+```
+
+## Outputs
+
+- `stuttgart_buildings.ttl` — enriched RDF knowledge graph
+- `stuttgart_heat_risk_map.html` — interactive Folium map of buildings and risk categories
 
 ## Attribution
 
-- Building geometry: © LGL BW, [dl-de/by-2-0](https://www.govdata.de/dl-de/by-2-0)
-- Climate data: [Open-Meteo Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api), CC BY 4.0
+- Building geometry: © LGL Baden-Württemberg, dl-de/by-2-0
+- Climate data: Open-Meteo Historical Weather API, CC BY 4.0
+- OSM data: © OpenStreetMap contributors, ODbL

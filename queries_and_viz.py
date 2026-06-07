@@ -1,17 +1,12 @@
 import re
 from pathlib import Path
+import html
 
 import folium
 from pyproj import Transformer
-from rdflib import Graph, Namespace
-from rdflib.namespace import XSD
+from rdflib import Graph
 
-UHI   = Namespace("https://w3id.org/stuttgart-uhi#")
-BOT   = Namespace("https://w3id.org/bot#")
-SOSA  = Namespace("http://www.w3.org/ns/sosa/")
-GEO   = Namespace("http://www.opengis.net/ont/geosparql#")
-ALKIS = Namespace("https://w3id.org/stuttgart-uhi/alkis/")
-EX    = Namespace("https://w3id.org/stuttgart-uhi/data/")
+from namespaces import bind_all
 
 BASE_DIR = Path(__file__).resolve().parent
 TTL_FILE = BASE_DIR / "stuttgart_buildings.ttl"
@@ -27,6 +22,13 @@ PREFIX geo:  <http://www.opengis.net/ont/geosparql#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
+CATEGORY_STYLE = {
+    "LowRisk": {"color": "#2ecc71", "radius": 2},
+    "MediumRisk": {"color": "#f1c40f", "radius": 3},
+    "HighRisk": {"color": "#e67e22", "radius": 5},
+    "ExtremeRisk": {"color": "#c0392b", "radius": 6},
+}
+
 
 def local_name(uri) -> str:
     text = str(uri)
@@ -34,7 +36,7 @@ def local_name(uri) -> str:
 
 
 def wkt_to_latlon(wkt: str) -> tuple[float, float] | None:
-    m = re.search(r"POINT\(([0-9.]+)\s+([0-9.]+)\)", wkt)
+    m = re.search(r"POINT\(\s*([-0-9.]+)\s+([-0-9.]+)\s*\)", wkt)
     if not m:
         return None
     easting, northing = float(m.group(1)), float(m.group(2))
@@ -43,230 +45,145 @@ def wkt_to_latlon(wkt: str) -> tuple[float, float] | None:
 
 
 def run_queries(g: Graph) -> None:
-    print("=" * 60)
-    print("SPARQL query results")
-    print("=" * 60)
+    print("=" * 70)
+    print("SPARQL query results — score-based heat-risk ontology")
+    print("=" * 70)
 
-    Q1 = SPARQL_PREFIXES + """
-    SELECT ?zone
-           (COUNT(DISTINCT ?b) AS ?total_bldg)
-           (COUNT(DISTINCT ?vb) AS ?vuln_bldg)
-           (COUNT(DISTINCT ?obs) AS ?heat_days)
-    WHERE {
-        ?b a bot:Building ;
-           uhi:inAnalysisZone ?zone .
-
-        ?obs a uhi:HeatDayObservation ;
-             sosa:hasFeatureOfInterest ?zone .
-
-        OPTIONAL {
-            ?vb a uhi:VulnerableBuilding ;
-                uhi:inAnalysisZone ?zone .
-        }
-    }
-    GROUP BY ?zone
-    ORDER BY DESC(?vuln_bldg)
-    """
-
-    print("\nQ1 — Zone risk summary")
-    print(f"  {'Zone':<30} {'Total':>6} {'Vuln':>6} {'HeatDays':>9}")
-    for row in g.query(Q1):
-        print(
-            f"  {local_name(row.zone):<30} "
-            f"{int(row.total_bldg):>6} "
-            f"{int(row.vuln_bldg):>6} "
-            f"{int(row.heat_days):>9}"
-        )
-
-    Q2 = SPARQL_PREFIXES + """
-    SELECT ?zone ?rf (COUNT(DISTINCT ?b) AS ?n)
+    q1 = SPARQL_PREFIXES + """
+    SELECT ?zone ?category (COUNT(DISTINCT ?b) AS ?n) (AVG(?score) AS ?avgScore)
     WHERE {
         ?b a bot:Building ;
            uhi:inAnalysisZone ?zone ;
-           uhi:hasRiskFactor ?rf .
+           uhi:hasHeatRiskAssessment ?assessment .
+        ?assessment uhi:hasRiskCategory ?category ;
+                    uhi:hasHeatRiskScore ?score .
     }
-    GROUP BY ?zone ?rf
-    ORDER BY ?zone DESC(?n)
+    GROUP BY ?zone ?category
+    ORDER BY ?zone DESC(?avgScore)
     """
 
-    print("\nQ2 — Risk factor count per zone")
-    print(f"  {'Zone':<30} {'Risk factor':<25} {'Buildings':>9}")
-    for row in g.query(Q2):
+    print("\nQ1 — Building risk categories per zone")
+    print(f"  {'Zone':<18} {'Category':<14} {'Buildings':>9} {'AvgScore':>9}")
+    for row in g.query(q1):
         print(
-            f"  {local_name(row.zone):<30} "
-            f"{local_name(row.rf).replace('Instance', ''):<25} "
-            f"{int(row.n):>9}"
+            f"  {local_name(row.zone):<18} {local_name(row.category):<14} "
+            f"{int(row.n):>9} {float(row.avgScore):>9.3f}"
         )
 
-    Q3 = SPARQL_PREFIXES + """
-    SELECT ?roofLabel (COUNT(?b) AS ?n)
+    q2 = SPARQL_PREFIXES + """
+    SELECT ?building ?category ?score ?deltaT ?zone
     WHERE {
-        ?b a uhi:VulnerableBuilding ;
-           uhi:hasRoofType ?rt .
-        ?rt rdfs:label ?roofLabel .
-        FILTER(LANG(?roofLabel) = "en")
+        ?building a bot:Building ;
+                  uhi:inAnalysisZone ?zone ;
+                  uhi:hasHeatRiskAssessment ?assessment .
+        ?assessment uhi:hasRiskCategory ?category ;
+                    uhi:hasHeatRiskScore ?score ;
+                    uhi:hasIndicativeDeltaT ?deltaT .
+        FILTER(?category IN (uhi:HighRisk, uhi:ExtremeRisk))
     }
-    GROUP BY ?roofLabel
-    ORDER BY DESC(?n)
-    """
-
-    print("\nQ3 — Roof types of vulnerable buildings")
-    for row in g.query(Q3):
-        print(f"  {str(row.roofLabel):<30} {int(row.n):>4}")
-
-    Q4_VULN = SPARQL_PREFIXES + """
-    SELECT (AVG(?h) AS ?avg_h)
-           (AVG(?fp) AS ?avg_fp)
-           (MAX(?h) AS ?max_h)
-           (MAX(?fp) AS ?max_fp)
-    WHERE {
-        ?b a uhi:VulnerableBuilding ;
-           uhi:hasMeasuredHeight ?h ;
-           uhi:hasFootprintArea ?fp .
-    }
-    """
-
-    Q4_ALL = SPARQL_PREFIXES + """
-    SELECT (AVG(?h) AS ?avg_h)
-           (AVG(?fp) AS ?avg_fp)
-    WHERE {
-        ?b a bot:Building ;
-           uhi:hasMeasuredHeight ?h ;
-           uhi:hasFootprintArea ?fp .
-    }
-    """
-
-    print("\nQ4 — Geometry stats: vulnerable vs. all buildings")
-    for row in g.query(Q4_VULN):
-        print(
-            f"  Vulnerable — avg height: {float(row.avg_h):.1f} m  "
-            f"avg footprint: {float(row.avg_fp):.0f} m²  "
-            f"max height: {float(row.max_h):.1f} m  "
-            f"max footprint: {float(row.max_fp):.0f} m²"
-        )
-
-    for row in g.query(Q4_ALL):
-        print(
-            f"  All bldgs  — avg height: {float(row.avg_h):.1f} m  "
-            f"avg footprint: {float(row.avg_fp):.0f} m²"
-        )
-
-    Q5 = SPARQL_PREFIXES + """
-    SELECT ?zone
-           (MAX(?t) AS ?max_t)
-           (COUNT(?obs) AS ?heat_days)
-    WHERE {
-        ?obs a uhi:HeatDayObservation ;
-             sosa:hasFeatureOfInterest ?zone ;
-             sosa:hasSimpleResult ?t .
-    }
-    GROUP BY ?zone
-    ORDER BY DESC(?max_t)
-    """
-
-    print("\nQ5 — Peak temperature and heat days per zone")
-    print(f"  {'Zone':<30} {'Max temp':>9} {'Heat days':>10}")
-    for row in g.query(Q5):
-        print(
-            f"  {local_name(row.zone):<30} "
-            f"{float(row.max_t):>8.1f}°C "
-            f"{int(row.heat_days):>10}"
-        )
-
-    Q6 = SPARQL_PREFIXES + """
-    SELECT ?b
-           (GROUP_CONCAT(DISTINCT ?factorLabel; separator=", ") AS ?factors)
-           (SAMPLE(?h) AS ?height)
-           (SAMPLE(?fp) AS ?footprint)
-    WHERE {
-        ?b a uhi:VulnerableBuilding ;
-           uhi:hasRiskFactor ?rf ;
-           uhi:hasMeasuredHeight ?h ;
-           uhi:hasFootprintArea ?fp .
-        OPTIONAL {
-            ?rf rdfs:label ?factorLabel .
-            FILTER(LANG(?factorLabel) = "en")
-        }
-    }
-    GROUP BY ?b
-    ORDER BY DESC(?height)
+    ORDER BY DESC(?score)
     LIMIT 15
     """
 
-    print("\nQ6 — Explainability sample: why selected buildings are vulnerable")
-    print(f"  {'Building':<24} {'Risk factors':<60} {'Height':>8} {'Footprint':>10}")
-    for row in g.query(Q6):
+    print("\nQ2 — Most vulnerable buildings by assessment score")
+    print(f"  {'Building':<24} {'Zone':<18} {'Category':<14} {'Score':>7} {'ΔT':>7}")
+    for row in g.query(q2):
         print(
-            f"  {local_name(row.b):<24} "
-            f"{str(row.factors):<60} "
-            f"{float(row.height):>7.1f}m "
-            f"{float(row.footprint):>9.0f}m²"
+            f"  {local_name(row.building):<24} {local_name(row.zone):<18} "
+            f"{local_name(row.category):<14} {float(row.score):>7.3f} {float(row.deltaT):>6.2f}°C"
+        )
+
+    q3 = SPARQL_PREFIXES + """
+    SELECT ?zone ?score ?category ?svf ?density ?basin ?veg ?trees ?imperv ?heatDays
+    WHERE {
+        ?zone uhi:hasHeatRiskAssessment ?assessment ;
+              uhi:hasSkyViewFactor ?svf ;
+              uhi:hasUrbanDensity ?density ;
+              uhi:hasBasinDepth ?basin ;
+              uhi:hasVegetationFraction ?veg ;
+              uhi:hasTreeCount ?trees ;
+              uhi:hasImperviousSurfaceFraction ?imperv ;
+              uhi:hasHeatDayCount ?heatDays .
+        ?assessment a uhi:ZoneHeatRiskAssessment ;
+                    uhi:hasHeatRiskScore ?score ;
+                    uhi:hasRiskCategory ?category .
+    }
+    ORDER BY DESC(?score)
+    """
+
+    print("\nQ3 — Why zones are risky: indicator explanation")
+    print(f"  {'Zone':<18} {'Cat':<12} {'Score':>6} {'SVF':>6} {'Dens':>6} {'Basin':>6} {'Veg':>6} {'Trees':>7} {'Imperv':>7} {'Heat':>5}")
+    for row in g.query(q3):
+        print(
+            f"  {local_name(row.zone):<18} {local_name(row.category):<12} "
+            f"{float(row.score):>6.3f} {float(row.svf):>6.3f} {float(row.density):>6.3f} "
+            f"{float(row.basin):>6.3f} {float(row.veg):>6.3f} {int(row.trees):>7} "
+            f"{float(row.imperv):>7.3f} {int(row.heatDays):>5}"
+        )
+
+    q4 = SPARQL_PREFIXES + """
+    SELECT DISTINCT ?zone ?vegType ?dominantType ?trees ?veg
+    WHERE {
+        ?zone uhi:hasVegetationFraction ?veg ;
+              uhi:hasTreeCount ?trees .
+        OPTIONAL { ?zone uhi:hasVegetationType ?vegType . }
+        OPTIONAL { ?zone uhi:hasDominantVegetationType ?dominantType . }
+    }
+    ORDER BY ?zone ?vegType
+    """
+
+    print("\nQ4 — OSM vegetation enrichment by zone")
+    seen = set()
+    for row in g.query(q4):
+        key = (row.zone, row.vegType, row.dominantType)
+        if key in seen:
+            continue
+        seen.add(key)
+        veg_type = local_name(row.vegType) if row.vegType else "-"
+        dominant = local_name(row.dominantType) if row.dominantType else "-"
+        print(
+            f"  {local_name(row.zone):<18} veg={float(row.veg):.3f} "
+            f"trees={int(row.trees):<5} type={veg_type:<20} dominant={dominant}"
         )
 
 
-def risk_factor_labels(g: Graph, building_uri) -> list[str]:
-    Q = SPARQL_PREFIXES + """
-    SELECT ?label WHERE {
-        VALUES ?b { <%s> }
-        ?b uhi:hasRiskFactor ?rf .
-        OPTIONAL {
-            ?rf rdfs:label ?label .
-            FILTER(LANG(?label) = "en")
-        }
-    }
-    ORDER BY ?label
-    """ % str(building_uri)
-
-    labels = []
-    for row in g.query(Q):
-        labels.append(str(row.label) if row.label else "Risk factor")
-    return labels
-
-
 def build_map(g: Graph) -> None:
-    print("\nBuilding map …")
+    print("\nBuilding interactive map …")
 
-    Q_MAP = SPARQL_PREFIXES + """
-    SELECT ?b ?wkt ?h ?fp ?zone ?vuln
+    q_map = SPARQL_PREFIXES + """
+    SELECT ?building ?wkt ?height ?footprint ?zone ?assessment ?score ?deltaT ?category
     WHERE {
-        ?b a bot:Building ;
-           uhi:hasMeasuredHeight ?h ;
-           uhi:hasFootprintArea ?fp ;
-           uhi:inAnalysisZone ?zone ;
-           geo:hasGeometry ?geom .
+        ?building a bot:Building ;
+                  uhi:hasMeasuredHeight ?height ;
+                  uhi:hasFootprintArea ?footprint ;
+                  uhi:inAnalysisZone ?zone ;
+                  geo:hasGeometry ?geom ;
+                  uhi:hasHeatRiskAssessment ?assessment .
         ?geom geo:asWKT ?wkt .
-        BIND(EXISTS { ?b a uhi:VulnerableBuilding } AS ?vuln)
+        ?assessment uhi:hasHeatRiskScore ?score ;
+                    uhi:hasIndicativeDeltaT ?deltaT ;
+                    uhi:hasRiskCategory ?category .
     }
     """
 
-    ZONE_COLORS = {
-        "Zone_513_5402": "#3186cc",
-        "Zone_513_5403": "#e07b39",
-        "Zone_514_5402": "#5baa57",
-        "Zone_514_5403": "#9b5fc0",
+    m = folium.Map(location=[48.762, 9.179], zoom_start=14, tiles="CartoDB positron")
+    layers = {
+        "LowRisk": folium.FeatureGroup(name="Low risk", show=False),
+        "MediumRisk": folium.FeatureGroup(name="Medium risk", show=False),
+        "HighRisk": folium.FeatureGroup(name="High risk", show=True),
+        "ExtremeRisk": folium.FeatureGroup(name="Extreme risk", show=True),
     }
 
-    m = folium.Map(
-        location=[48.762, 9.179],
-        zoom_start=14,
-        tiles="CartoDB positron",
-    )
-
-    layer_vuln = folium.FeatureGroup(
-        name="Vulnerable buildings (reasoning-inferred)",
-        show=True,
-    )
-    layer_normal = folium.FeatureGroup(
-        name="Other buildings",
-        show=True,
-    )
-
-    skipped = 0
     plotted = 0
-    vuln_count = 0
+    skipped = 0
+    category_counts = {key: 0 for key in layers}
 
-    rows = list(g.query(Q_MAP))
-    print(f"  Plotting {len(rows)} buildings …")
+    rows = list(g.query(q_map))
+    if not rows:
+        raise RuntimeError(
+            "No HeatRiskAssessment found. Run risk_assessment.py first."
+        )
+    print(f"  Plotting {len(rows)} assessed buildings …")
 
     for row in rows:
         ll = wkt_to_latlon(str(row.wkt))
@@ -274,100 +191,81 @@ def build_map(g: Graph) -> None:
             skipped += 1
             continue
 
+        category = local_name(row.category)
+        style = CATEGORY_STYLE.get(category, {"color": "#7f8c8d", "radius": 3})
+        layer = layers.get(category, layers["MediumRisk"])
         lat, lon = ll
-        height = float(row.h)
-        footprint = float(row.fp)
+        score = float(row.score)
+        delta_t = float(row.deltaT)
+        height = float(row.height)
+        footprint = float(row.footprint)
+        building_id = local_name(row.building)
         zone_id = local_name(row.zone)
-        building_id = local_name(row.b)
-        is_vulnerable = str(row.vuln).lower() == "true"
 
-        factors_html = ""
-        if is_vulnerable:
-            factors = risk_factor_labels(g, row.b)
-            if factors:
-                factors_html = "<br><b>Risk factors:</b><br>" + "<br>".join(
-                    f"• {factor}" for factor in factors
-                )
+        building_id_safe = html.escape(building_id)
+        zone_id_safe = html.escape(zone_id)
+        category_safe = html.escape(category)
 
         popup_html = (
-            f"<b>{building_id}</b><br>"
+            f"<b>{building_id_safe}</b><br>"
+            f"Zone: {zone_id_safe}<br>"
+            f"Category: <b>{category_safe}</b><br>"
+            f"Heat risk score: {score:.3f}<br>"
+            f"Indicative ΔT: {delta_t:.2f} °C<br>"
             f"Height: {height:.1f} m<br>"
-            f"Footprint: {footprint:.0f} m²<br>"
-            f"Zone: {zone_id}<br>"
-            f"<b style='color:{'red' if is_vulnerable else 'gray'}'>"
-            f"{'⚠ VulnerableBuilding' if is_vulnerable else 'Normal'}</b>"
-            f"{factors_html}"
+            f"Footprint: {footprint:.0f} m²"
         )
 
-        if is_vulnerable:
-            folium.CircleMarker(
-                location=[lat, lon],
-                radius=6,
-                color="#c0392b",
-                fill=True,
-                fill_color="#e74c3c",
-                fill_opacity=0.85,
-                weight=1.5,
-                popup=folium.Popup(popup_html, max_width=260),
-                tooltip=f"⚠ {building_id} ({height:.0f}m, {footprint:.0f}m²)",
-            ).add_to(layer_vuln)
-            vuln_count += 1
-        else:
-            folium.CircleMarker(
-                location=[lat, lon],
-                radius=2,
-                color=ZONE_COLORS.get(zone_id, "#7f8c8d"),
-                fill=True,
-                fill_color=ZONE_COLORS.get(zone_id, "#7f8c8d"),
-                fill_opacity=0.4,
-                weight=0.5,
-                popup=folium.Popup(popup_html, max_width=220),
-            ).add_to(layer_normal)
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=style["radius"],
+            color=style["color"],
+            fill=True,
+            fill_color=style["color"],
+            fill_opacity=0.75,
+            weight=1,
+            popup=folium.Popup(popup_html, max_width=260),
+            tooltip=f"{category_safe}: {building_id_safe} ({score:.2f})",
+        ).add_to(layer)
 
         plotted += 1
+        category_counts[category] = category_counts.get(category, 0) + 1
 
-    layer_normal.add_to(m)
-    layer_vuln.add_to(m)
+    for layer in layers.values():
+        layer.add_to(m)
 
     legend_html = """
     <div style="position:fixed;bottom:30px;left:30px;z-index:9999;
                 background:white;padding:12px 16px;border-radius:6px;
                 border:1px solid #ccc;font-family:sans-serif;font-size:13px;">
-      <b>Stuttgart Heat Risk KG</b><br>
-      <span style="color:#e74c3c">&#9679;</span> Vulnerable building
-            (reasoning-inferred: &#8805;2 risk factors)<br>
-      <span style="color:#3186cc">&#9679;</span> Zone 513/5402 (SW)<br>
-      <span style="color:#e07b39">&#9679;</span> Zone 513/5403 (NW)<br>
-      <span style="color:#5baa57">&#9679;</span> Zone 514/5402 (SE)<br>
-      <span style="color:#9b5fc0">&#9679;</span> Zone 514/5403 (NE)<br>
+      <b>Stuttgart UHI Heat Risk</b><br>
+      <span style="color:#2ecc71">●</span> LowRisk<br>
+      <span style="color:#f1c40f">●</span> MediumRisk<br>
+      <span style="color:#e67e22">●</span> HighRisk<br>
+      <span style="color:#c0392b">●</span> ExtremeRisk<br>
       <br>
-      <small>Data: LGL BW LoD2 &bull; Climate: Open-Meteo 2024<br>
-      Ontology: BOT + SOSA + GeoSPARQL + uhi:</small>
+      <small>Score-based HeatRiskAssessment model<br>
+      LoD2 + Open-Meteo + OSM vegetation</small>
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
     folium.LayerControl(collapsed=False).add_to(m)
-
     m.save(str(MAP_FILE))
-    print(f"  Plotted : {plotted} buildings ({vuln_count} vulnerable, {skipped} skipped)")
+
+    print(f"  Plotted : {plotted} buildings ({skipped} skipped)")
+    print(f"  Counts  : {category_counts}")
     print(f"  Map saved: {MAP_FILE.name}")
 
 
 def main() -> None:
     print("Loading graph …")
-
     g = Graph()
-    for prefix, ns in [
-        ("uhi", UHI),
-        ("bot", BOT),
-        ("sosa", SOSA),
-        ("geo", GEO),
-        ("alkis", ALKIS),
-        ("ex", EX),
-        ("xsd", XSD),
-    ]:
-        g.bind(prefix, ns)
+    bind_all(g)
 
+    if not TTL_FILE.exists():
+        raise FileNotFoundError(
+            f"Could not find {TTL_FILE}. Run the pipeline first."
+        )
     g.parse(str(TTL_FILE), format="turtle")
     print(f"  {len(g)} triples")
 

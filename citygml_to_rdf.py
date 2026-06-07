@@ -1,17 +1,11 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from collections import Counter
 
-import rdflib
-from rdflib import Graph, Namespace, URIRef, Literal
-from rdflib.namespace import RDF, RDFS, OWL, XSD
+from rdflib import Graph, URIRef, Literal
+from rdflib.namespace import RDF, RDFS, XSD
 
-BOT   = Namespace("https://w3id.org/bot#")
-GEO   = Namespace("http://www.opengis.net/ont/geosparql#")
-SOSA  = Namespace("http://www.w3.org/ns/sosa/")
-UHI   = Namespace("https://w3id.org/stuttgart-uhi#")
-ALKIS = Namespace("https://w3id.org/stuttgart-uhi/alkis/")
-EX    = Namespace("https://w3id.org/stuttgart-uhi/data/")
+from namespaces import UHI, BOT, GEO, ALKIS, EX, bind_all
+
 
 # Repository-local paths. Keep the GML folder beside this script.
 BASE_DIR = Path(__file__).resolve().parent
@@ -29,6 +23,9 @@ NS = {
 ROOF_MAP = {
     "1000": ALKIS.Flachdach,
     "2100": ALKIS.Pultdach,
+    "2200": ALKIS.Satteldach,
+    "2300": ALKIS.Walmdach,
+    "2400": ALKIS.Krueppelwalmdach,
     "3100": ALKIS.Tonnendach,
     "3200": ALKIS.Kuppeldach,
     "3500": ALKIS.Mansarddach,
@@ -36,11 +33,6 @@ ROOF_MAP = {
     "5000": ALKIS.Mischform,
     "9999": ALKIS.UnbekannterDachtyp,
 }
-
-# Thresholds calibrated against Stuttgart-Mitte dataset (median height 10.9 m, median footprint 80 m²)
-FLAT_ROOF_CODES           = {"1000"}   # Flachdach only — Mischform excluded, roof geometry too varied
-LARGE_FOOTPRINT_THRESHOLD = 500.0      # m² — approx. 3 SD above dataset median
-TALL_BUILDING_THRESHOLD   = 20.0       # m  — urban canyon effects significant above ~6 floors
 
 ZONE_MAP = {
     "LoD2_32_513_5402_1_BW": (EX.Zone_513_5402, "Stuttgart tile 513/5402 (SW)"),
@@ -64,7 +56,11 @@ def alkis_function_uri(code: str) -> URIRef:
 
 
 def shoelace_area(coords: list[tuple[float, float]]) -> float:
-    """Signed shoelace formula; returns absolute area."""
+    """Return polygon area in square metres.
+
+    Assumes coordinates are projected EPSG:25832 / UTM metres.
+    Do not use this function for WGS84 longitude/latitude coordinates.
+    """
     n = len(coords)
     if n < 3:
         return 0.0
@@ -109,6 +105,10 @@ def extract_ground_surface(building_el) -> tuple[float, float, float]:
 def convert_tile(path: Path, g: Graph, stats: dict) -> None:
     print(f"  Parsing {path.name} ...")
     root = ET.parse(path).getroot()
+    if path.stem not in ZONE_MAP:
+        print(f"  Skipping unknown tile: {path.name}")
+        return
+
     zone_uri, zone_label = ZONE_MAP[path.stem]
 
     g.add((zone_uri, RDF.type, UHI.LoD2Tile))
@@ -162,46 +162,15 @@ def convert_tile(path: Path, g: Graph, stats: dict) -> None:
 
         g.add((bldg_uri, UHI.hasBuildingFunction, alkis_function_uri(func_code or "")))
 
-        risk_count = 0
-        if roof_code in FLAT_ROOF_CODES:
-            g.add((bldg_uri, UHI.hasRiskFactor, UHI.FlatRoofInstance))
-            risk_count += 1
-            stats["rf_flat_roof"] += 1
-
-        if footprint_m2 >= LARGE_FOOTPRINT_THRESHOLD:
-            g.add((bldg_uri, UHI.hasRiskFactor, UHI.LargeFootprintInstance))
-            risk_count += 1
-            stats["rf_large_footprint"] += 1
-
-        if height_val >= TALL_BUILDING_THRESHOLD:
-            g.add((bldg_uri, UHI.hasRiskFactor, UHI.TallBuildingInstance))
-            risk_count += 1
-            stats["rf_tall"] += 1
-
         stats["total_converted"] += 1
-        if risk_count >= 2:
-            stats["multi_risk"] += 1
 
 
 def build_graph() -> Graph:
     g = Graph()
-    for prefix, ns in [("bot", BOT), ("geo", GEO), ("sosa", SOSA),
-                       ("uhi", UHI), ("alkis", ALKIS), ("ex", EX), ("xsd", XSD)]:
-        g.bind(prefix, ns)
+    bind_all(g)
 
     g.parse(str(ONTOLOGY_FILE), format="turtle")
     print(f"  Ontology loaded: {len(g)} triples")
-
-    # Shared individuals — one instance per risk factor class, referenced by all buildings
-    g.add((UHI.FlatRoofInstance,       RDF.type,    OWL.NamedIndividual))
-    g.add((UHI.FlatRoofInstance,       RDF.type,    UHI.HighAbsorptionRoof))
-    g.add((UHI.LargeFootprintInstance, RDF.type,    OWL.NamedIndividual))
-    g.add((UHI.LargeFootprintInstance, RDF.type,    UHI.LargeFootprint))
-    g.add((UHI.TallBuildingInstance,   RDF.type,    OWL.NamedIndividual))
-    g.add((UHI.TallBuildingInstance,   RDF.type,    UHI.TallBuilding))
-    g.add((UHI.FlatRoofInstance,       RDFS.label,  Literal("Flat roof risk factor")))
-    g.add((UHI.LargeFootprintInstance, RDFS.label,  Literal("Large footprint risk factor")))
-    g.add((UHI.TallBuildingInstance,   RDFS.label,  Literal("Tall building risk factor")))
 
     return g
 
@@ -213,15 +182,13 @@ def main():
         raise FileNotFoundError(f"CityGML data directory not found: {DATA_DIR}")
 
     TILES = sorted(DATA_DIR.glob("*.gml"))
+    if not TILES:
+        raise FileNotFoundError(f"No .gml files found in {DATA_DIR}")
 
     stats = {
         "total_converted":    0,
         "skipped_incomplete": 0,
         "skipped_no_geom":    0,
-        "multi_risk":         0,
-        "rf_flat_roof":       0,
-        "rf_large_footprint": 0,
-        "rf_tall":            0,
         "roof_types":         {},
     }
 
@@ -239,7 +206,7 @@ def main():
     print(f"Skipped (incomplete) : {stats['skipped_incomplete']}")
     print(f"Skipped (no geometry): {stats['skipped_no_geom']}")
     print(f"Total triples        : {len(g)}")
-    print(f"Buildings with >=2 risk factors: {stats['multi_risk']}")
+    print(f"Building geometry and attributes exported for score-based assessment.")
 
 
 if __name__ == "__main__":

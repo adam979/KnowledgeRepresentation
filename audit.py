@@ -2,7 +2,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from collections import Counter
 
-DATA_DIR = Path(r"D:\Downloads\AI Lab Project\LoD2_32_513_5402_2_bw")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "LoD2_32_513_5402_2_bw"
 TILES = sorted(DATA_DIR.glob("*.gml"))
 
 NS = {
