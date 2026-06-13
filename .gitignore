@@ -19,5 +19,6 @@ _hermit_tmp.owl
 __pycache__/
 *.py[cod]
 .venv/
-venv/
+.myenv/
+.vscode/
 *.egg-info/
