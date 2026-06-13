@@ -13,8 +13,10 @@ SCRIPTS = [
     "citygml_to_rdf.py",
     "climate_data.py",
     "osm_enrichment.py",
-    "clms_landcover.py",
-    "terrain_dgm.py",
+    "svf_calculator.py",     # geometric SVF from LoD2 wall/roof surfaces
+    "clms_landcover.py",     # CLMS tree canopy + imperviousness (10 m raster)
+    "terrain_dgm.py",        # TPI-derived topographic exposure (DGM1 1 m)
+    "uhi_calibration.py",    # calibrate ΔT formula from DWD stations; writes α/β to graph
     "risk_assessment.py",
     "queries_and_viz.py",
 ]

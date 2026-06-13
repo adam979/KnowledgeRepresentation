@@ -77,17 +77,21 @@ Run the scripts in order. Each enrichment step reads and writes `stuttgart_build
 | 2 | `citygml_to_rdf.py` | Convert LoD2 buildings to RDF and create building/zone triples |
 | 3 | `climate_data.py` | Add Open-Meteo SOSA observations and heat-day observations |
 | 4 | `osm_enrichment.py` | Add OSM vegetation fraction, tree count, and vegetation types |
-| 5 | `clms_landcover.py` | Per-zone tree canopy coverage and impervious fraction from CLMS HRL |
-| 6 | `terrain_dgm.py` | Compute per-zone topographic exposure from the LGL DGM1 (TPI) |
-| 7 | `risk_assessment.py` | Compute zone/building heat-risk assessments and categories |
-| 8 | `queries_and_viz.py` | Run SPARQL queries and generate an interactive map |
+| 5 | `svf_calculator.py` | True geometric Sky View Factor per building from LoD2 walls/roofs |
+| 6 | `clms_landcover.py` | Per-zone tree canopy coverage and impervious fraction from CLMS HRL |
+| 7 | `terrain_dgm.py` | Compute per-zone topographic exposure from the LGL DGM1 (TPI) |
+| 8 | `uhi_calibration.py` | Calibrate ΔT formula from DWD station measurements; writes α/β to graph |
+| 9 | `risk_assessment.py` | Compute zone/building heat-risk assessments using calibrated ΔT |
+| 10 | `queries_and_viz.py` | Run SPARQL queries and generate an interactive map |
 
 ```bash
 python citygml_to_rdf.py
 python climate_data.py
 python osm_enrichment.py
+python svf_calculator.py
 python clms_landcover.py
 python terrain_dgm.py
+python uhi_calibration.py
 python risk_assessment.py
 python queries_and_viz.py
 ```
@@ -174,6 +178,14 @@ The 0.80 hardcoded impervious-fraction fallback previously used in `risk_assessm
 - Cecilia, A., Casasanta, G., Petenko, I., Conidi, A., & Argentini, S. (2022). Measuring the urban heat island of Rome through a dense weather station network and imperviousness Copernicus Land Monitoring Service data. *17th Plinius Conference on Mediterranean Risks*, Plinius17-52. <https://doi.org/10.5194/egusphere-plinius17-52>
 - Półrolniczak, M., Kolendowicz, L., & Tomczyk, A. M. (2024). Urban growth's implications on land surface temperature in a medium-sized European city based on LCZ classification. *Scientific Reports*. (Quantifies LST/IMD relationship at ~0.14 K per 10 % IMD increase.)
 - Copernicus Land Monitoring Service (2024). *Urban heat islands: measured, mapped and managed.* CLMS Feature Article. <https://land.copernicus.eu/en/feature-articles/urban-heat-islands-measured-mapped-and-managed>
+
+## Sky View Factor (geometric, from LoD2)
+
+`svf_calculator.py` computes a true geometric Sky View Factor per building from the LoD2 wall and roof surfaces. From each building centroid (1.5 m above ground), N = 256 rays are cast uniformly over the upper hemisphere using a Fibonacci / golden-angle spiral with equal-solid-angle spacing. Each ray is tested against nearby surface triangles within a 60 m radius using a vectorised Möller–Trumbore intersection, and SVF = (2/N) · Σ sin(elevation_i) · unblocked_i. Results are written as `uhi:hasSkyViewFactor` per building and zone-averaged per zone; `risk_assessment.py` uses the per-building value when available and the zone average as fallback. This replaces a previous `density + height` heuristic and removes the largest approximation in the score.
+
+## ΔT calibration against DWD station measurements
+
+`uhi_calibration.py` calibrates the linear ΔT relation `ΔT = α + β·score` using hourly temperature data from DWD CDC stations near Stuttgart. The pipeline applies an elevation correction (lapse rate −0.65 °C/100 m) to normalise all temperatures to Stuttgart valley level (≈247 m), identifies the best DWD urban/rural pair, computes elevation-corrected UHI on heat days, and adds a literature-informed Stuttgart Kessel valley correction (+2.0 °C; Scherer 2014; DWD Stadtklima 2020) to account for the basin heat-trapping effect that hilltop reference stations such as Schnarrenberg miss. Calibrated coefficients are stored as a `uhi:CalibrationResult` instance with `uhi:hasCalibrationAlpha` and `uhi:hasCalibrationBeta`; `risk_assessment.py` reads them on its next run.
 
 ## Validation against Theeuwes (2017)
 

@@ -123,7 +123,22 @@ def get_literal_int(g: Graph, subject: URIRef, predicate: URIRef, default: int =
         return default
 
 
-def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
+def read_delta_t_coefficients(g: Graph) -> tuple[float, float]:
+    """Read calibrated ΔT coefficients (alpha, beta) from the graph if available.
+
+    Written by uhi_calibration.py from DWD station measurements. If the graph
+    contains no uhi:CalibrationResult, fall back to the project defaults that
+    were used before calibration was wired into the pipeline.
+    """
+    cal = g.value(predicate=RDF.type, object=UHI.CalibrationResult)
+    if cal is not None:
+        alpha = float(g.value(cal, UHI.hasCalibrationAlpha) or 0.0)
+        beta = float(g.value(cal, UHI.hasCalibrationBeta) or 4.3969)
+        return alpha, beta
+    return 7.45, 3.97   # uncalibrated defaults
+
+
+def compute_zone_indicators(g: Graph, dt_alpha: float = 7.45, dt_beta: float = 3.97) -> list[ZoneIndicators]:
     """Compute one indicator row per zone without duplicate aggregation.
 
     The function intentionally aggregates in Python instead of using a single
@@ -183,8 +198,9 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
             W_HEAT_DAYS * heat_day_norm
         )
 
-        # Indicative ΔT is a project-level proxy for visualisation, not a calibrated physical simulation.
-        delta_t = round(7.45 + 3.97 * score, 2)
+        # Indicative ΔT uses calibrated coefficients from uhi_calibration.py if
+        # available; otherwise project defaults. Calibration is DWD-station based.
+        delta_t = round(dt_alpha + dt_beta * score, 2)
         category = risk_category(score)
 
         indicators.append(ZoneIndicators(
@@ -252,16 +268,25 @@ def add_zone_assessment(g: Graph, ind: ZoneIndicators) -> URIRef:
     return assessment
 
 
-def add_building_assessments(g: Graph, zone_indicators: dict[URIRef, ZoneIndicators]) -> int:
+def add_building_assessments(g: Graph, zone_indicators: dict[URIRef, ZoneIndicators],
+                              dt_alpha: float = 7.45, dt_beta: float = 3.97) -> int:
     query = SPARQL_PREFIXES + """
-    SELECT ?building ?zone ?height ?footprint
+    SELECT ?building ?zone ?height ?footprint ?bsvf
     WHERE {
         ?building a bot:Building ;
                   uhi:inAnalysisZone ?zone ;
                   uhi:hasMeasuredHeight ?height ;
                   uhi:hasFootprintArea ?footprint .
+        OPTIONAL { ?building uhi:hasSkyViewFactor ?bsvf . }
     }
     """
+
+    # Clear stale VulnerableBuilding classifications from any previous run so
+    # buildings that drop to MediumRisk or LowRisk don't retain the old type.
+    for s, _, _ in list(g.triples((None, RDF.type, UHI.VulnerableBuilding))):
+        g.remove((s, RDF.type, UHI.VulnerableBuilding))
+    for s, _, _ in list(g.triples((None, UHI.classifiesAsVulnerableBuilding, None))):
+        g.remove((s, UHI.classifiesAsVulnerableBuilding, None))
 
     vulnerable_count = 0
     for row in g.query(query):
@@ -276,14 +301,21 @@ def add_building_assessments(g: Graph, zone_indicators: dict[URIRef, ZoneIndicat
         height = float(row.height or 0.0)
         footprint = float(row.footprint or 0.0)
 
+        # Use per-building geometric SVF when available (computed by svf_calculator.py);
+        # fall back to zone average. Replace only the SVF component of the zone score so
+        # all other zone-level indicators (density, topographic exposure, tree canopy,
+        # imperviousness, heat days) remain unchanged at building level.
+        building_svf = clamp(float(row.bsvf)) if row.bsvf is not None else ind.sky_view_factor
+        svf_delta = W_SVF * (ind.sky_view_factor - building_svf)
+
         # Project-defined exposure modifiers.
         # Taller/larger buildings inherit slightly higher exposure within the same zone.
         height_modifier = clamp((height - ind.avg_height) / 30.0, -0.05, 0.08)
         footprint_modifier = clamp((footprint - 500.0) / 5000.0, 0.0, 0.05)
-        building_score = clamp(ind.score + height_modifier + footprint_modifier)
+        building_score = clamp(ind.score + svf_delta + height_modifier + footprint_modifier)
 
-        # Indicative ΔT is a project-level proxy for visualisation, not a calibrated physical simulation.
-        building_delta_t = round(7.45 + 3.97 * building_score, 2)
+        # Indicative ΔT uses calibrated coefficients from uhi_calibration.py if available.
+        building_delta_t = round(dt_alpha + dt_beta * building_score, 2)
         category = risk_category(building_score)
 
         g.add((assessment, RDF.type, UHI.HeatRiskAssessment))
@@ -322,7 +354,13 @@ def main() -> None:
     triples_before = len(g)
     print(f"  {triples_before} triples loaded")
 
-    indicators = compute_zone_indicators(g)
+    dt_alpha, dt_beta = read_delta_t_coefficients(g)
+    if (dt_alpha, dt_beta) == (7.45, 3.97):
+        print(f"  ΔT coefficients : project defaults (α={dt_alpha}, β={dt_beta}) — run uhi_calibration.py to calibrate")
+    else:
+        print(f"  ΔT coefficients : calibrated from DWD (α={dt_alpha:.3f}, β={dt_beta:.3f})")
+
+    indicators = compute_zone_indicators(g, dt_alpha, dt_beta)
     if not indicators:
         raise RuntimeError("No zones found. Run citygml_to_rdf.py and climate_data.py first.")
 
@@ -339,7 +377,7 @@ def main() -> None:
         )
 
     print("\nComputing building heat-risk assessments ...")
-    vulnerable = add_building_assessments(g, zone_lookup)
+    vulnerable = add_building_assessments(g, zone_lookup, dt_alpha, dt_beta)
 
     g.serialize(destination=str(TTL_FILE), format="turtle")
     print(f"\nBuilding assessments classified as vulnerable: {vulnerable}")
