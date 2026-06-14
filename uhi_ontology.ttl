@@ -40,9 +40,9 @@ uhi:DailyMaxTemperature a sosa:ObservableProperty ;
 uhi:DefaultUHIScoreModel a owl:NamedIndividual,
         uhi:ScoreBasedHeatRiskModel ;
     rdfs:label "Default UHI score model"@en ;
-    rdfs:comment "Default project score model: 0.35·(1−SVF) + 0.20·density + 0.15·basinDepth + 0.10·(1−vegetationFraction) + 0.10·imperviousFraction + 0.10·heatDayNorm."@en ;
+    rdfs:comment "Default project score model: 0.35·(1−SVF) + 0.20·density + 0.15·topographicExposure + 0.10·(1−treeCanopyCoverage) + 0.10·imperviousFraction + 0.10·heatDayNorm."@en ;
     uhi:hasRiskThreshold 0.6 ;
-    uhi:hasScoreFormula "0.35*(1-SVF)+0.20*density+0.15*basinDepth+0.10*(1-vegetationFraction)+0.10*imperviousFraction+0.10*heatDayNorm" .
+    uhi:hasScoreFormula "0.35*(1-SVF)+0.20*density+0.15*topographicExposure+0.10*(1-treeCanopyCoverage)+0.10*imperviousFraction+0.10*heatDayNorm" .
 
 uhi:ExtremeRisk a owl:Class,
         owl:NamedIndividual,
@@ -226,10 +226,40 @@ uhi:gemeindeschluessel a owl:DatatypeProperty ;
     owl:deprecated true ;
     owl:equivalentProperty uhi:hasGemeindeschluessel .
 
+uhi:hasTopographicExposure a owl:DatatypeProperty ;
+    rdfs:label "has topographic exposure"@en ;
+    rdfs:comment "Normalised topographic indicator of local terrain depression, computed as mean depression depth (mean of clipped negative Topographic Position Index) over the analysis zone, divided by a reference relief of 10 m and clamped to [0, 1]. Higher values indicate stronger basin-like depression and therefore higher heat-retention potential due to cold-air pooling and reduced ventilation. Derived from the LGL Baden-Württemberg DGM1 (1 m resolution) at a 300 m TPI neighbourhood radius. References: Weiss (2001); De Reu et al. (2013); Emeis et al. (2022)."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasMeanElevation a owl:DatatypeProperty ;
+    rdfs:label "has mean elevation"@en ;
+    rdfs:comment "Mean terrain elevation in metres above DHHN2016, computed across the analysis zone from the LGL Baden-Württemberg DGM1 (1 m resolution). Stored for traceability of the topographic exposure indicator."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasMinElevation a owl:DatatypeProperty ;
+    rdfs:label "has minimum elevation"@en ;
+    rdfs:comment "Minimum terrain elevation in metres above DHHN2016 over the analysis zone (DGM1, 1 m)."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasMaxElevation a owl:DatatypeProperty ;
+    rdfs:label "has maximum elevation"@en ;
+    rdfs:comment "Maximum terrain elevation in metres above DHHN2016 over the analysis zone (DGM1, 1 m)."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasMeanDepressionDepth a owl:DatatypeProperty ;
+    rdfs:label "has mean depression depth"@en ;
+    rdfs:comment "Mean of clipped negative Topographic Position Index across the analysis zone, in metres. Raw input to uhi:hasTopographicExposure; stored for traceability."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
 uhi:hasBasinDepth a owl:DatatypeProperty ;
-    rdfs:label "has basin depth"@en ;
-    rdfs:comment "Normalised terrain/basin-depth indicator representing local topographic heat-retention potential."@en,
-        "Terrain basin-depth indicator used to represent local topographic heat-retention potential."@en ;
+    rdfs:label "has basin depth (deprecated)"@en ;
+    rdfs:comment "Deprecated. Superseded by uhi:hasTopographicExposure, which is derived from the LGL DGM1 via TPI rather than hand-assigned."@en ;
+    owl:deprecated true ;
     rdfs:domain uhi:AnalysisZone ;
     rdfs:range xsd:decimal .
 
@@ -259,8 +289,13 @@ uhi:hasHeatRiskAssessment a owl:ObjectProperty ;
 
 uhi:hasImperviousSurfaceFraction a owl:DatatypeProperty ;
     rdfs:label "has impervious surface fraction"@en ;
-    rdfs:comment "Fraction of an analysis zone covered by impervious surfaces."@en,
-        "Fraction of the analysis zone covered by impervious or heat-retaining surfaces."@en ;
+    rdfs:comment "Fraction of the analysis zone covered by impervious (artificially sealed) surfaces, in [0, 1]. Derived from the Copernicus Land Monitoring Service High Resolution Layer Imperviousness Density 2024 (10 m raster) by clms_landcover.py. Replaces a previously hardcoded 0.80 fallback for dense urban tiles. Reference: European Union, Copernicus Land Monitoring Service (2024); used directly as a UHI indicator e.g. by Cecilia et al. (2022) and Polrolniczak et al. (2024)."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasTreeCanopyCoverage a owl:DatatypeProperty ;
+    rdfs:label "has tree canopy coverage"@en ;
+    rdfs:comment "Fraction of the analysis zone covered by tree canopy, in [0, 1]. Derived from the Copernicus Land Monitoring Service High Resolution Layer Tree Cover Density 2023 (10 m raster) by clms_landcover.py. Used as the vegetation cooling input to the UHI score, since tree canopy (providing shade and evapotranspiration) is the dominant vegetation-driven UHI mitigation mechanism. Distinct from uhi:hasVegetationFraction, which is derived from OSM land-use polygons and measures broader vegetation land cover. Reference: European Union, Copernicus Land Monitoring Service (2023)."@en ;
     rdfs:domain uhi:AnalysisZone ;
     rdfs:range xsd:decimal .
 
@@ -413,7 +448,7 @@ uhi:RoofHeatRiskFactor a owl:Class ;
 
 uhi:ScoreBasedHeatRiskModel a owl:Class ;
     rdfs:label "Score-based heat risk model"@en ;
-    rdfs:comment "Risk model combining normalised indicators such as 1-SVF, urban density and basin depth into a score from 0 to 1."@en ;
+    rdfs:comment "Risk model combining normalised indicators such as 1-SVF, urban density and topographic exposure into a score from 0 to 1."@en ;
     rdfs:subClassOf uhi:HeatRiskModel .
 
 uhi:SurfaceHeatRiskFactor a owl:Class ;
@@ -441,7 +476,7 @@ uhi:VulnerableBuilding a owl:Class ;
 
 uhi:ZoneHeatRiskAssessment a owl:Class ;
     rdfs:label "Zone heat risk assessment"@en ;
-    rdfs:comment "A heat risk assessment for an analysis zone, based on zone-level indicators such as sky view factor, vegetation coverage, density, basin depth, imperviousness, and heat days."@en ;
+    rdfs:comment "A heat risk assessment for an analysis zone, based on zone-level indicators such as sky view factor, vegetation coverage, density, topographic exposure, imperviousness, and heat days."@en ;
     rdfs:subClassOf uhi:HeatRiskAssessment .
 
 uhi:hasAlkisId a owl:DatatypeProperty ;
@@ -591,7 +626,7 @@ uhi:HeatRiskModel a owl:Class ;
 uhi:HeatRiskAssessment a owl:Class ;
     rdfs:label "Heat risk assessment"@en ;
     rdfs:comment "A computed assessment of urban heat risk based on spatial, climatic, and environmental indicators."@en,
-        "A score-based UHI assessment result for a building or analysis zone, computed from SVF, density, basin depth, vegetation, heat days and related indicators."@en .
+        "A score-based UHI assessment result for a building or analysis zone, computed from SVF, density, topographic exposure, vegetation, heat days and related indicators."@en .
 
 uhi:HeatRiskCategory a owl:Class ;
     rdfs:label "Heat risk category"@en ;
@@ -612,6 +647,22 @@ uhi:AnalysisZone a owl:Class ;
     rdfs:subClassOf geo:Feature,
         sosa:FeatureOfInterest,
         bot:Zone .
+
+uhi:CalibrationResult a owl:Class ;
+    rdfs:label "Calibration result"@en ;
+    rdfs:comment "Result of empirically calibrating the project ΔT formula ΔT = α + β·score against external observations (e.g. DWD station measurements). Stores the linear coefficients α and β that risk_assessment.py reads at runtime in place of project defaults."@en .
+
+uhi:hasCalibrationAlpha a owl:DatatypeProperty ;
+    rdfs:label "has calibration alpha"@en ;
+    rdfs:comment "Intercept α of the calibrated linear relation ΔT = α + β·score, in degrees Celsius. Written by uhi_calibration.py from DWD station measurements with elevation correction and a Stuttgart Kessel adjustment."@en ;
+    rdfs:domain uhi:CalibrationResult ;
+    rdfs:range xsd:decimal .
+
+uhi:hasCalibrationBeta a owl:DatatypeProperty ;
+    rdfs:label "has calibration beta"@en ;
+    rdfs:comment "Slope β of the calibrated linear relation ΔT = α + β·score, in degrees Celsius per unit score. Written by uhi_calibration.py from DWD station measurements."@en ;
+    rdfs:domain uhi:CalibrationResult ;
+    rdfs:range xsd:decimal .
 
 [] a owl:AllDifferent ;
     owl:distinctMembers ( alkis:Flachdach alkis:Pultdach alkis:Tonnendach alkis:Kuppeldach alkis:Mansarddach alkis:Zeltdach alkis:Mischform alkis:UnbekannterDachtyp ) .

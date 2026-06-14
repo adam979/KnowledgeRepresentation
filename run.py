@@ -4,20 +4,20 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VENV = ROOT / ".myenv"
+VENV = ROOT / ".venv"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 PYTHON = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 SCRIPTS = [
     "citygml_to_rdf.py",
-    "svf_calculator.py",   # geometric SVF from LoD2 wall/roof surfaces
     "climate_data.py",
     "osm_enrichment.py",
-    "copernicus_enrichment.py",  # overwrites veg/imperviousness fractions with 10 m satellite data
+    "svf_calculator.py",     # geometric SVF from LoD2 wall/roof surfaces
+    "clms_landcover.py",     # CLMS tree canopy + imperviousness (10 m raster)
+    "terrain_dgm.py",        # TPI-derived topographic exposure (DGM1 1 m)
     "risk_assessment.py",
-    "uhi_calibration.py",  # calibrate ΔT formula from DWD stations; writes coefficients to graph
-    "risk_assessment.py",  # re-run to apply calibrated ΔT to all building assessments
+    "uhi_calibration.py",    # calibrate ΔT formula from DWD stations; writes α/β to graph
     "queries_and_viz.py",
 ]
 
@@ -54,3 +54,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

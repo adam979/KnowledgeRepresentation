@@ -19,14 +19,16 @@ MAX_HEAT_DAYS_FOR_NORMALISATION = 30.0
 # impervious-surface fraction is available.
 DEFAULT_IMPERVIOUS_FRACTION = 0.80
 
-# Approximate topographic basin-depth values for the four Stuttgart-Mitte tiles.
-# Values are normalised 0..1 for the score model; they can be replaced by raster-derived values later.
-BASIN_DEPTH_BY_ZONE = {
-    "Zone_513_5402": 0.70,
-    "Zone_513_5403": 0.85,
-    "Zone_514_5402": 0.65,
-    "Zone_514_5403": 0.75,
-}
+# Topographic exposure is now derived per zone from the LGL Baden-Württemberg
+# DGM1 (1 m resolution) by terrain_dgm.py and stored on each AnalysisZone as
+# uhi:hasTopographicExposure. It replaces the previous hardcoded basin-depth
+# table. The fallback below is only used if terrain_dgm.py has not yet run.
+DEFAULT_TOPOGRAPHIC_EXPOSURE = 0.35
+
+# Tree canopy coverage is derived per zone from the Copernicus HRL Tree Cover
+# Density 2023 raster (10 m) by clms_landcover.py. Fallback assumes very low
+# canopy in a dense urban tile (Stuttgart-Mitte zones range 2.5%-6.4%).
+DEFAULT_TREE_CANOPY_COVERAGE = 0.05
 
 # Score thresholds. Tune after validation against external UHI studies or field data.
 
@@ -45,7 +47,7 @@ PREFIX geo:  <http://www.opengis.net/ont/geosparql#>
 # These should be calibrated or sensitivity-tested against measured UHI data in future work.
 W_SVF = 0.35
 W_DENSITY = 0.20
-W_BASIN = 0.15
+W_TOPO = 0.15
 W_VEGETATION = 0.10
 W_IMPERVIOUS = 0.10
 W_HEAT_DAYS = 0.10
@@ -53,8 +55,8 @@ W_HEAT_DAYS = 0.10
 RISK_MODEL_FORMULA = (
     f"{W_SVF:.2f}*(1-SVF)+"
     f"{W_DENSITY:.2f}*density+"
-    f"{W_BASIN:.2f}*basinDepth+"
-    f"{W_VEGETATION:.2f}*(1-vegetationFraction)+"
+    f"{W_TOPO:.2f}*topographicExposure+"
+    f"{W_VEGETATION:.2f}*(1-treeCanopyCoverage)+"
     f"{W_IMPERVIOUS:.2f}*imperviousFraction+"
     f"{W_HEAT_DAYS:.2f}*heatDayNorm"
 )
@@ -69,8 +71,9 @@ class ZoneIndicators:
     urban_density: float
     impervious_fraction: float
     sky_view_factor: float
-    basin_depth: float
+    topographic_exposure: float
     vegetation_fraction: float
+    tree_canopy_coverage: float
     tree_count: int
     heat_day_count: int
     heat_day_norm: float
@@ -121,11 +124,16 @@ def get_literal_int(g: Graph, subject: URIRef, predicate: URIRef, default: int =
 
 
 def read_delta_t_coefficients(g: Graph) -> tuple[float, float]:
-    """Read calibrated ΔT coefficients from the graph if available, else use defaults."""
+    """Read calibrated ΔT coefficients (alpha, beta) from the graph if available.
+
+    Written by uhi_calibration.py from DWD station measurements. If the graph
+    contains no uhi:CalibrationResult, fall back to the project defaults that
+    were used before calibration was wired into the pipeline.
+    """
     cal = g.value(predicate=RDF.type, object=UHI.CalibrationResult)
     if cal is not None:
         alpha = float(g.value(cal, UHI.hasCalibrationAlpha) or 0.0)
-        beta  = float(g.value(cal, UHI.hasCalibrationBeta)  or 4.3969)
+        beta = float(g.value(cal, UHI.hasCalibrationBeta) or 4.3969)
         return alpha, beta
     return 7.45, 3.97   # uncalibrated defaults
 
@@ -161,8 +169,13 @@ def compute_zone_indicators(g: Graph, dt_alpha: float = 7.45, dt_beta: float = 3
         urban_density = clamp(total_footprint / TILE_AREA_M2)
         impervious_fraction = get_literal_float(g, zone, UHI.hasImperviousSurfaceFraction, DEFAULT_IMPERVIOUS_FRACTION)
         vegetation_fraction = get_literal_float(g, zone, UHI.hasVegetationFraction, 0.0)
+        tree_canopy_coverage = clamp(get_literal_float(
+            g, zone, UHI.hasTreeCanopyCoverage, DEFAULT_TREE_CANOPY_COVERAGE
+        ))
         tree_count = get_literal_int(g, zone, UHI.hasTreeCount, 0)
-        basin_depth = BASIN_DEPTH_BY_ZONE.get(zone_id, 0.70)
+        topographic_exposure = clamp(get_literal_float(
+            g, zone, UHI.hasTopographicExposure, DEFAULT_TOPOGRAPHIC_EXPOSURE
+        ))
 
         # Preferred: use raster-derived SVF from the LoD2 SVF pipeline if available.
         # Fallback: approximate SVF from urban density and average building height.
@@ -179,12 +192,14 @@ def compute_zone_indicators(g: Graph, dt_alpha: float = 7.45, dt_beta: float = 3
         score = clamp(
             W_SVF * (1.0 - sky_view_factor) +
             W_DENSITY * urban_density +
-            W_BASIN * basin_depth +
-            W_VEGETATION * (1.0 - vegetation_fraction) +
+            W_TOPO * topographic_exposure +
+            W_VEGETATION * (1.0 - tree_canopy_coverage) +
             W_IMPERVIOUS * impervious_fraction +
             W_HEAT_DAYS * heat_day_norm
         )
 
+        # Indicative ΔT uses calibrated coefficients from uhi_calibration.py if
+        # available; otherwise project defaults. Calibration is DWD-station based.
         delta_t = round(dt_alpha + dt_beta * score, 2)
         category = risk_category(score)
 
@@ -196,8 +211,9 @@ def compute_zone_indicators(g: Graph, dt_alpha: float = 7.45, dt_beta: float = 3
             urban_density=urban_density,
             impervious_fraction=impervious_fraction,
             sky_view_factor=sky_view_factor,
-            basin_depth=basin_depth,
+            topographic_exposure=topographic_exposure,
             vegetation_fraction=vegetation_fraction,
+            tree_canopy_coverage=tree_canopy_coverage,
             tree_count=tree_count,
             heat_day_count=heat_days,
             heat_day_norm=heat_day_norm,
@@ -223,7 +239,8 @@ def add_zone_assessment(g: Graph, ind: ZoneIndicators) -> URIRef:
         (UHI.hasSkyViewFactor, ind.sky_view_factor, XSD.decimal),
         (UHI.hasAverageSkyViewFactor, ind.sky_view_factor, XSD.decimal),
         (UHI.hasUrbanDensity, ind.urban_density, XSD.decimal),
-        (UHI.hasBasinDepth, ind.basin_depth, XSD.decimal),
+        (UHI.hasTopographicExposure, ind.topographic_exposure, XSD.decimal),
+        (UHI.hasTreeCanopyCoverage, ind.tree_canopy_coverage, XSD.decimal),
         (UHI.hasHeatDayCount, ind.heat_day_count, XSD.integer),
         (UHI.hasImperviousSurfaceFraction, ind.impervious_fraction, XSD.decimal),
     ]
@@ -284,16 +301,20 @@ def add_building_assessments(g: Graph, zone_indicators: dict[URIRef, ZoneIndicat
         height = float(row.height or 0.0)
         footprint = float(row.footprint or 0.0)
 
-        # Use per-building geometric SVF when available; fall back to zone average.
-        # Replace only the SVF component of the zone score so all other zone-level
-        # indicators (density, basin, vegetation, etc.) remain unchanged.
+        # Use per-building geometric SVF when available (computed by svf_calculator.py);
+        # fall back to zone average. Replace only the SVF component of the zone score so
+        # all other zone-level indicators (density, topographic exposure, tree canopy,
+        # imperviousness, heat days) remain unchanged at building level.
         building_svf = clamp(float(row.bsvf)) if row.bsvf is not None else ind.sky_view_factor
         svf_delta = W_SVF * (ind.sky_view_factor - building_svf)
 
+        # Project-defined exposure modifiers.
+        # Taller/larger buildings inherit slightly higher exposure within the same zone.
         height_modifier = clamp((height - ind.avg_height) / 30.0, -0.05, 0.08)
         footprint_modifier = clamp((footprint - 500.0) / 5000.0, 0.0, 0.05)
         building_score = clamp(ind.score + svf_delta + height_modifier + footprint_modifier)
 
+        # Indicative ΔT uses calibrated coefficients from uhi_calibration.py if available.
         building_delta_t = round(dt_alpha + dt_beta * building_score, 2)
         category = risk_category(building_score)
 
@@ -334,6 +355,11 @@ def main() -> None:
     print(f"  {triples_before} triples loaded")
 
     dt_alpha, dt_beta = read_delta_t_coefficients(g)
+    if (dt_alpha, dt_beta) == (7.45, 3.97):
+        print(f"  ΔT coefficients : project defaults (α={dt_alpha}, β={dt_beta}) — run uhi_calibration.py to calibrate")
+    else:
+        print(f"  ΔT coefficients : calibrated from DWD (α={dt_alpha:.3f}, β={dt_beta:.3f})")
+
     indicators = compute_zone_indicators(g, dt_alpha, dt_beta)
     if not indicators:
         raise RuntimeError("No zones found. Run citygml_to_rdf.py and climate_data.py first.")
@@ -347,7 +373,7 @@ def main() -> None:
             f"  {local_name(ind.zone):<15} score={ind.score:.3f} "
             f"category={local_name(ind.category):<11} "
             f"SVF={ind.sky_view_factor:.3f} density={ind.urban_density:.3f} "
-            f"veg={ind.vegetation_fraction:.3f} heatDays={ind.heat_day_count}"
+            f"canopy={ind.tree_canopy_coverage:.3f} imperv={ind.impervious_fraction:.3f} heatDays={ind.heat_day_count}"
         )
 
     print("\nComputing building heat-risk assessments ...")
@@ -361,3 +387,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
